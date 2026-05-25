@@ -3,7 +3,7 @@
 Generative AI Engineering Learning Lab for building a production-realistic,
 agentic AI system in Python with RAG, agents, memory, orchestration, and MCP.
 
-Current phase: **Module 1 - Document Ingestion Pipeline**.
+Current phase: **Module 3 - Tool-Using Agent**.
 
 Start with the cumulative study document:
 
@@ -23,4 +23,26 @@ Run real indexing after Postgres/PGVector and Ollama are available:
 docker compose up postgres ollama
 ollama pull nomic-embed-text
 .venv/bin/python -m genai_lab.ingestion.cli
+```
+
+## Module 2 RAG
+
+Ask the local dry-run RAG engine without model or vector-store services:
+
+```bash
+.venv/bin/python -m genai_lab.rag.cli "What is embedding drift?" --strategy hybrid --transform step_back
+```
+
+Use the PGVector-backed retrieval path after Module 1 full indexing has run:
+
+```bash
+.venv/bin/python -m genai_lab.rag.cli "What is embedding drift?" --use-vector-store
+```
+
+## Module 3 agent
+
+Run the local tool-using research agent:
+
+```bash
+.venv/bin/python -m genai_lab.agents.cli "What is embedding drift?"
 ```

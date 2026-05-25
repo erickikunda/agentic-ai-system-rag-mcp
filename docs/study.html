@@ -668,6 +668,345 @@ ollama pull nomic-embed-text
       <button class="reveal" type="button" data-toggle-answers>Reveal Answers</button>
     </div>
   </section>
+
+  <section id="module-2">
+    <h2>Module 2 - RAG Query Engine</h2>
+    <p class="meta">Status: implemented and verified with local retrieval and deterministic synthesis.</p>
+
+    <div class="callout">
+      <strong>What changed:</strong> the project now has a RAG query engine with retrieval
+      strategies, query transforms, citation objects, prompt-injection screening, context budgeting,
+      a local no-service execution path, and PGVector-backed LlamaIndex retrieval wiring.
+    </div>
+
+    <h3>What Was Built</h3>
+    <p>
+      Module 2 adds <code>src/genai_lab/rag</code>. The main entry point is
+      <code>RagQueryEngine</code> in <code>engine.py</code>. It accepts a question, expands it into
+      retrieval queries, retrieves evidence, screens retrieved text as untrusted data, applies a
+      context budget, synthesizes an answer, and returns citations plus warnings.
+    </p>
+
+    <p>
+      The engine has two paths. The verified local path uses <code>LocalCorpusRetriever</code> over
+      the source files in <code>data/research_notes</code>. That path does not need Ollama,
+      Postgres, or an API key, which makes tests and study runs stable. The production-shaped path
+      creates a LlamaIndex <code>VectorStoreIndex</code> from PGVector and maps our retrieval
+      strategy to LlamaIndex vector query modes.
+    </p>
+
+    <h3>Execution Model Under the Hood</h3>
+    <p>
+      A RAG query is a pipeline, not a single call. First, <code>build_query_variants</code> creates
+      one or more retrieval queries. <code>none</code> uses the original question. <code>step_back</code>
+      adds a broader conceptual query. <code>hyde</code> adds a hypothetical-answer query. In this
+      module those transforms are deterministic so the system can be tested without a model call, but
+      the prompt contracts are defined with LangChain <code>ChatPromptTemplate</code> so later modules
+      can swap in model-generated rewrites.
+    </p>
+
+    <p>
+      Retrieval then runs against either the local corpus or PGVector. Local retrieval uses the same
+      LlamaIndex <code>SentenceSplitter</code> as ingestion, then scores nodes with a simple IDF-like
+      lexical score. This is not pretending to be semantic vector search; it is a deterministic
+      harness for exercising ranking, citations, and safety behavior. The PGVector path uses
+      <code>VectorStoreIndex.from_vector_store</code> with the configured embedding model.
+    </p>
+
+    <pre><code>Question
+  -> QueryTransform: none | step_back | hyde
+  -> RetrievalStrategy: similarity | mmr | hybrid
+  -> Rerank / diversify
+  -> Prompt-injection screen
+  -> Context token budget
+  -> Answer synthesis
+  -> Citation objects + warnings
+</code></pre>
+
+    <h3>Retrieval Strategies</h3>
+    <p>
+      <code>similarity</code> ranks by relevance score and returns the top chunks. This is the
+      lowest-latency baseline and is the first strategy to benchmark. <code>mmr</code> uses maximal
+      marginal relevance to penalize chunks that duplicate already selected evidence. It is useful
+      when the corpus contains repeated claims or many near-identical sections. <code>hybrid</code>
+      is the production target for queries that mix exact terminology with semantic intent. In the
+      local path it combines lexical scoring with exact-query bonuses; in the vector path it maps to
+      LlamaIndex's hybrid vector-store query mode.
+    </p>
+
+    <h3>Reranking and Context Budgeting</h3>
+    <p>
+      Module 2 includes lightweight reranking behavior through MMR and <code>rerank_top_n</code>.
+      This is where production systems usually decide whether to add a cross-encoder reranker. A
+      reranker can improve answer quality by moving the best evidence to the top, but it adds latency
+      and often an extra model dependency. For a research assistant, the right pattern is usually:
+      retrieve more than you need, rerank down to the strongest few chunks, then enforce a context
+      budget before synthesis.
+    </p>
+
+    <h3>Citation Handling</h3>
+    <p>
+      The engine returns explicit <code>Citation</code> objects with source id, source file, path,
+      score, snippet, and safety flags. The deterministic answer uses bracket citations such as
+      <code>[1]</code>. In the PGVector path, the code also imports LlamaIndex
+      <code>CitationQueryEngine</code> to document the intended model-backed citation pattern. We use
+      <code>RetrieverQueryEngine</code> there for now because Module 2 also needs query variants and
+      strategy-level control.
+    </p>
+
+    <h3>Prompt Injection from Documents</h3>
+    <p>
+      Retrieved documents are untrusted input. A paper, README, ticket, or scraped page can contain
+      text that looks like instructions to the model. Module 2 adds <code>screen_context</code> in
+      <code>security.py</code> to flag common patterns such as "ignore previous instructions",
+      role-confusion language, system-prompt references, and secret-exfiltration bait. This is not a
+      complete defense. It is an operational tripwire and a teaching point: RAG does not remove prompt
+      injection risk because retrieved text shares the model's context window with real instructions.
+    </p>
+
+    <h3>Code References</h3>
+    <ul>
+      <li><code>src/genai_lab/rag/engine.py</code>: high-level query engine, answer synthesis, citations.</li>
+      <li><code>src/genai_lab/rag/retrieval.py</code>: local retrieval, MMR, context budget, PGVector retriever wiring.</li>
+      <li><code>src/genai_lab/rag/query_transform.py</code>: HyDE and step-back query variants plus LangChain prompt contracts.</li>
+      <li><code>src/genai_lab/rag/security.py</code>: retrieved-context screening and context-boundary instruction.</li>
+      <li><code>src/genai_lab/rag/schema.py</code>: RAG config, strategy enums, citations, and answer DTOs.</li>
+      <li><code>src/genai_lab/rag/cli.py</code>: command-line RAG interface.</li>
+      <li><code>tests/test_rag_engine.py</code>: tests for transforms, safety flags, and cited local answers.</li>
+    </ul>
+
+    <h3>Best Practices Applied</h3>
+    <ul>
+      <li>Separate retrieval strategy from answer synthesis so ranking can be evaluated independently.</li>
+      <li>Return citations as structured data, not only text appended to an answer.</li>
+      <li>Keep a deterministic local path so retrieval behavior is testable without model variance.</li>
+      <li>Screen retrieved context before synthesis and surface warnings with the answer.</li>
+      <li>Budget context explicitly instead of passing every retrieved chunk to the model.</li>
+      <li>Use query transforms as configurable retrieval behavior, not hidden prompt magic.</li>
+    </ul>
+
+    <h3>Gotchas and Failure Modes</h3>
+    <ul>
+      <li><strong>Retrieval quality vs latency:</strong> hybrid search, query expansion, and reranking can improve recall, but every extra step adds latency and cost.</li>
+      <li><strong>Query expansion drift:</strong> HyDE and step-back prompting can retrieve broader evidence, but they can also move away from the user's actual question.</li>
+      <li><strong>Citation theater:</strong> bracket citations are not proof unless citations point to the exact retrieved evidence used by synthesis.</li>
+      <li><strong>Context flooding:</strong> too many chunks can degrade answer quality because the model must choose among weak, duplicated, or conflicting evidence.</li>
+      <li><strong>False safety confidence:</strong> regex screening catches obvious prompt-injection patterns, not adversarial hidden text or subtle instruction laundering.</li>
+      <li><strong>Hybrid mismatch:</strong> local hybrid scoring is a test harness; production hybrid behavior depends on vector-store capabilities and sparse-index configuration.</li>
+    </ul>
+
+    <h3>How to Run</h3>
+    <pre><code># Local no-service RAG path
+.venv/bin/python -m genai_lab.rag.cli "What is embedding drift?" --strategy hybrid --transform step_back
+
+# PGVector path after full ingestion and Ollama embeddings are available
+.venv/bin/python -m genai_lab.rag.cli "What is embedding drift?" --use-vector-store
+</code></pre>
+
+    <h3>Verification</h3>
+    <p>
+      Module 2 was verified with syntax compilation, the full test suite, and a CLI query. The test
+      suite currently has 8 tests passing. The CLI query for "What is embedding drift?" returns a
+      cited answer from <code>rag_failure_modes.md</code>. The PGVector path is wired but was not run
+      because it requires a populated vector table and a reachable embedding backend.
+    </p>
+
+    <h3>Source Notes</h3>
+    <p>
+      The implementation aligns with current official documentation for
+      <a href="https://docs.llamaindex.ai/en/stable/api_reference/retrievers/query_fusion/">LlamaIndex query fusion concepts</a>,
+      <a href="https://docs.llamaindex.ai/en/stable/module_guides/querying/node_postprocessors/">LlamaIndex node postprocessors and reranking</a>,
+      <a href="https://docs.llamaindex.ai/en/stable/examples/query_engine/citation_query_engine/">LlamaIndex citation query engines</a>,
+      <a href="https://docs.langchain.com/oss/python/langchain/retrieval">LangChain retrieval guidance</a>,
+      and <a href="https://docs.langchain.com/oss/python/langchain/rag">LangChain RAG security notes on indirect prompt injection</a>.
+    </p>
+
+    <div class="quiz">
+      <h3>Quiz</h3>
+
+      <h4>1. Why is retrieval evaluated separately from answer generation?</h4>
+      <p class="answer">Because a fluent model can hide bad retrieval. If the right evidence is not retrieved, synthesis quality is mostly damage control.</p>
+
+      <h4>2. What problem does MMR solve?</h4>
+      <p class="answer">It trades a little raw relevance for diversity, reducing near-duplicate chunks and improving coverage of distinct evidence.</p>
+
+      <h4>3. When can HyDE hurt retrieval?</h4>
+      <p class="answer">When the hypothetical answer introduces terms or assumptions that are not actually part of the user's question, pulling retrieval toward plausible but irrelevant evidence.</p>
+
+      <h4>4. Why are retrieved documents treated as untrusted input?</h4>
+      <p class="answer">Because they can contain instructions, hidden prompts, or exfiltration bait. The model sees that text in the same context window as real instructions.</p>
+
+      <h4>5. What makes citations meaningful rather than decorative?</h4>
+      <p class="answer">They must point to the exact retrieved evidence used in the answer, with stable source metadata and enough snippet context for auditability.</p>
+
+      <button class="reveal" type="button" data-toggle-answers>Reveal Answers</button>
+    </div>
+  </section>
+
+  <section id="module-3">
+    <h2>Module 3 - Tool-Using Agent</h2>
+    <p class="meta">Status: implemented and verified with a local bounded tool loop.</p>
+
+    <div class="callout">
+      <strong>What changed:</strong> the project now has LangChain custom tools, explicit Pydantic
+      tool schemas, a bounded ReAct-style local executor, structured final output, retry-aware tool
+      error handling, token budget checks, a CLI, and an optional LangChain <code>create_agent</code>
+      factory for model-backed runs.
+    </div>
+
+    <h3>What Was Built</h3>
+    <p>
+      Module 3 adds <code>src/genai_lab/agents</code>. The tool layer in <code>tools.py</code>
+      exposes three LangChain tools: <code>rag_search</code>, <code>compare_sources</code>, and
+      <code>citation_lookup</code>. The local executor in <code>executor.py</code> runs a small
+      ReAct-style loop: choose an action, call a tool, observe the result, track the trace, and produce
+      a structured <code>ResearchAgentResponse</code>.
+    </p>
+
+    <p>
+      This module deliberately separates two concerns. The local executor is deterministic and
+      testable without an LLM. The optional <code>create_model_backed_agent</code> factory in
+      <code>langchain_agent.py</code> uses LangChain's modern <code>create_agent</code> runtime and
+      the same tool list. That keeps the study path runnable while still showing the production
+      integration point for a provider-backed model.
+    </p>
+
+    <h3>Execution Model Under the Hood</h3>
+    <p>
+      LangChain tools are callable objects with names, descriptions, and argument schemas. In this
+      module, each tool has a Pydantic input model. The schema is not only validation; it is also the
+      contract a model sees when deciding whether and how to call a tool. Tool descriptions are part of
+      the control plane. Vague descriptions cause vague tool calls.
+    </p>
+
+    <pre><code>User task
+  -> Planner chooses next action
+  -> Tool schema validates input
+  -> Tool executes with retry boundary
+  -> Observation is recorded in trace
+  -> Budget / iteration limits are checked
+  -> Structured final response is validated by Pydantic
+</code></pre>
+
+    <p>
+      LangChain's current <code>create_agent</code> builds a graph-backed agent runtime using
+      LangGraph internally. A model node decides whether to call tools or finish; a tools node executes
+      selected tools; the loop continues until a final response or stop condition. Module 3's local
+      executor mirrors those mechanics without pretending to be a substitute for a reasoning model.
+    </p>
+
+    <h3>Custom Tools</h3>
+    <ul>
+      <li><code>rag_search</code>: calls the Module 2 RAG engine and returns JSON with answer, citations, and warnings.</li>
+      <li><code>compare_sources</code>: compares two known corpus files for contrast-style questions.</li>
+      <li><code>citation_lookup</code>: verifies source provenance and returns a short excerpt.</li>
+    </ul>
+
+    <p>
+      These tools are intentionally narrow. A good tool does one thing, names its inputs clearly, and
+      returns a boring shape. The agent should not need to reverse-engineer prose to understand whether
+      a call succeeded.
+    </p>
+
+    <h3>Structured Output</h3>
+    <p>
+      The final response is a Pydantic <code>ResearchAgentResponse</code> with <code>status</code>,
+      <code>answer</code>, <code>citations</code>, <code>tools_used</code>, and <code>warnings</code>.
+      This is the shape downstream APIs and future LangGraph nodes should consume. Free-form text is
+      fine for display; structured output is what keeps orchestration sane.
+    </p>
+
+    <h3>Error Handling, Retries, and Fallbacks</h3>
+    <p>
+      Tool calls are wrapped at the executor boundary. A failing tool records one trace per attempt and
+      is retried up to <code>agent_tool_retry_attempts</code>. If retries are exhausted, the agent does
+      not hallucinate a successful answer. It returns <code>needs_review</code> with a tool failure
+      warning. That is a fallback chain in the operational sense: when automation cannot complete
+      safely, route to a recoverable state instead of continuing the loop blindly.
+    </p>
+
+    <p>
+      The executor also enforces <code>agent_max_iterations</code> and <code>agent_token_budget</code>.
+      Token budgeting here is approximate, but the design lesson matters: agents need loop limits and
+      context limits before they are trusted with real user traffic.
+    </p>
+
+    <h3>Code References</h3>
+    <ul>
+      <li><code>src/genai_lab/agents/tools.py</code>: LangChain tool definitions and Pydantic schemas.</li>
+      <li><code>src/genai_lab/agents/executor.py</code>: bounded ReAct-style loop, retry handling, traces, token budget.</li>
+      <li><code>src/genai_lab/agents/schema.py</code>: structured final output and tool trace DTOs.</li>
+      <li><code>src/genai_lab/agents/langchain_agent.py</code>: optional model-backed LangChain <code>create_agent</code> factory.</li>
+      <li><code>src/genai_lab/agents/cli.py</code>: command-line agent interface.</li>
+      <li><code>tests/test_agent_executor.py</code>: tests for tool routing, retries, structured output, and citation lookup.</li>
+    </ul>
+
+    <h3>Best Practices Applied</h3>
+    <ul>
+      <li>Use explicit Pydantic tool schemas instead of loose dictionaries.</li>
+      <li>Keep tool descriptions specific enough to guide model selection.</li>
+      <li>Return structured JSON from tools so observations are machine-readable.</li>
+      <li>Convert tool exceptions into traceable observations at the tool boundary.</li>
+      <li>Set iteration, retry, and token-budget limits before adding more tools.</li>
+      <li>Keep model construction outside the agent so provider switching remains a composition concern.</li>
+    </ul>
+
+    <h3>Gotchas and Failure Modes</h3>
+    <ul>
+      <li><strong>Tool description drift:</strong> if descriptions no longer match behavior, models will call the wrong tools with confidence.</li>
+      <li><strong>Schema looseness:</strong> permissive schemas move validation failure deeper into the tool, where errors are harder to recover from.</li>
+      <li><strong>Retry storms:</strong> retrying deterministic validation failures wastes time and tokens. Retry only the classes of failure likely to recover.</li>
+      <li><strong>Context bloat:</strong> every tool observation can become future model context. Summarize or trim aggressively in long loops.</li>
+      <li><strong>Fake success:</strong> the most dangerous fallback is an answer that hides tool failure. Prefer <code>needs_review</code>.</li>
+      <li><strong>Structured-output friction:</strong> provider-native structured output and tool calling differ by model; test each provider profile explicitly.</li>
+    </ul>
+
+    <h3>How to Run</h3>
+    <pre><code># Local deterministic tool-using agent
+.venv/bin/python -m genai_lab.agents.cli "What is embedding drift?"
+
+# Compare-style task
+.venv/bin/python -m genai_lab.agents.cli "Compare RAG failure modes versus agentic workflows"
+</code></pre>
+
+    <h3>Verification</h3>
+    <p>
+      Module 3 was verified with syntax compilation, the full test suite, and the local agent CLI.
+      The suite currently has 12 tests passing. The CLI returns a structured JSON answer and a tool
+      trace. The model-backed <code>create_agent</code> factory is wired but was not invoked because it
+      requires a concrete chat model adapter and provider credentials or local model serving.
+    </p>
+
+    <h3>Source Notes</h3>
+    <p>
+      The design aligns with current LangChain documentation for
+      <a href="https://docs.langchain.com/oss/python/langchain/agents">agents and <code>create_agent</code></a>,
+      <a href="https://docs.langchain.com/oss/python/langchain/tools">tool definitions</a>,
+      <a href="https://docs.langchain.com/oss/python/langchain/structured-output">structured output</a>,
+      and <a href="https://reference.langchain.com/python/langchain/agents/middleware/tool_retry/ToolRetryMiddleware">tool retry middleware</a>.
+    </p>
+
+    <div class="quiz">
+      <h3>Quiz</h3>
+
+      <h4>1. Why are tool descriptions part of the control plane?</h4>
+      <p class="answer">Because the model uses names, descriptions, and schemas to decide which tool to call and how to fill arguments. Bad descriptions create bad actions.</p>
+
+      <h4>2. Why should tools return structured data?</h4>
+      <p class="answer">Structured observations let the agent, traces, tests, and downstream workflows distinguish answers, warnings, citations, and failures without parsing prose.</p>
+
+      <h4>3. What is the right fallback when a required tool fails repeatedly?</h4>
+      <p class="answer">Return a recoverable state such as needs_review with a traceable failure, rather than fabricating an answer.</p>
+
+      <h4>4. Why is token budget management needed before long-running agents?</h4>
+      <p class="answer">Tool outputs accumulate in context. Without a budget, agents can silently degrade, exceed context windows, or bury important evidence.</p>
+
+      <h4>5. Why keep model construction outside the agent module?</h4>
+      <p class="answer">It preserves provider switching. The agent should consume model and tool interfaces, not know whether OpenAI, Gemini, Claude, or Ollama constructed the model.</p>
+
+      <button class="reveal" type="button" data-toggle-answers>Reveal Answers</button>
+    </div>
+  </section>
 </main>
 
 <script>

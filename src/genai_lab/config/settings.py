@@ -64,6 +64,13 @@ class Settings(BaseSettings):
     ingestion_cache_dir: str = ".cache/llamaindex/ingestion"
     chunk_size_tokens: int = 512
     chunk_overlap_tokens: int = 80
+    rag_top_k: int = 5
+    rag_rerank_top_n: int = 3
+    rag_context_token_budget: int = 1600
+    rag_min_score: float = 0.05
+    agent_max_iterations: int = 4
+    agent_tool_retry_attempts: int = 2
+    agent_token_budget: int = 2200
 
     mcp_server_url: str = "http://mcp-server:8080"
     langsmith_tracing: bool = False
