@@ -9,6 +9,8 @@ from pathlib import Path
 from langchain_core.tools import BaseTool, tool
 
 from genai_lab.config.settings import Settings
+from genai_lab.mcp.client import build_mcp_provider
+from genai_lab.mcp.langchain_tools import build_mcp_langchain_tools
 from genai_lab.rag.engine import RagQueryEngine, build_rag_config
 from genai_lab.rag.schema import RetrievalStrategy
 
@@ -89,7 +91,8 @@ def build_research_tools(settings: Settings) -> list[BaseTool]:
             sort_keys=True,
         )
 
-    return [rag_search, compare_sources, citation_lookup]
+    mcp_tools = build_mcp_langchain_tools(build_mcp_provider(settings))
+    return [rag_search, compare_sources, citation_lookup, *mcp_tools]
 
 
 def _find_source(settings: Settings, query: str) -> Path:
@@ -111,4 +114,3 @@ def _first_content_sentence(text: str) -> str:
         if delimiter in normalized:
             return normalized.split(delimiter, 1)[0].strip() + delimiter.strip()
     return normalized[:220].strip()
-

@@ -26,6 +26,7 @@ genai-lab-agent = "genai_lab.agents.cli:main"
 genai-lab-workflow = "genai_lab.workflows.cli:main"
 genai-lab-memory = "genai_lab.memory.cli:main"
 genai-lab-mcp = "genai_lab.mcp.cli:main"
+genai-lab-eval = "genai_lab.evaluation.cli:main"
 
 [dependency-groups]
 dev = [

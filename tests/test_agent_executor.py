@@ -51,7 +51,15 @@ class AgentExecutorTests(unittest.TestCase):
         self.assertEqual(result["source_name"], "rag_failure_modes.md")
         self.assertIn("source_path", result)
 
+    def test_agent_can_route_to_mcp_reading_plan_tool(self) -> None:
+        agent = ToolUsingResearchAgent(settings=Settings())
+
+        run = agent.run("Build a reading plan for MCP integration")
+
+        self.assertEqual(run.response.status, "answered")
+        self.assertEqual(run.response.tools_used, ["mcp_build_reading_plan"])
+        self.assertIn("1.", run.response.answer)
+
 
 if __name__ == "__main__":
     unittest.main()
-

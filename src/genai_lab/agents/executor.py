@@ -77,6 +77,12 @@ class ToolUsingResearchAgent:
                     },
                 )
             ]
+        if "reading plan" in task_lower or "study plan" in task_lower:
+            return [("mcp_build_reading_plan", {"topic": user_task, "level": "senior CS student"})]
+        if "normalize" in task_lower and "claim" in task_lower:
+            return [("mcp_normalize_claim", {"claim": user_task})]
+        if "venue" in task_lower or "arxiv" in task_lower:
+            return [("mcp_lookup_venue_metadata", {"venue": user_task})]
         return [("rag_search", {"question": user_task, "strategy": "hybrid"})]
 
     def _call_tool(
@@ -139,6 +145,17 @@ class ToolUsingResearchAgent:
                 answer_parts.append(str(result["answer"]))
             if "comparison" in result:
                 answer_parts.append(str(result["comparison"]))
+            if "normalizedClaim" in result:
+                answer_parts.append(str(result["normalizedClaim"]))
+            if "venueType" in result:
+                answer_parts.append(
+                    f"{result.get('venue')} is a {result.get('venueType')} with review model "
+                    f"{result.get('reviewModel')}. {result.get('caution')}"
+                )
+            if "steps" in result:
+                steps = result.get("steps", [])
+                if isinstance(steps, list):
+                    answer_parts.append(" ".join(f"{index}. {step}" for index, step in enumerate(steps, start=1)))
             citations.extend(str(item) for item in result.get("citations", []))
             warnings.extend(str(item) for item in result.get("warnings", []))
 
@@ -173,4 +190,3 @@ def _summarize(value: object, *, max_chars: int = 240) -> str:
 
 def _estimate_tokens(text: str) -> int:
     return max(1, len(text.split()))
-

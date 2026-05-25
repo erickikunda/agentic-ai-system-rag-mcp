@@ -1,0 +1,16 @@
+spring:
+  application:
+    name: genai-lab-mcp-server
+  ai:
+    mcp:
+      server:
+        name: genai-lab-research-tools
+        version: 0.1.0
+        type: SYNC
+        protocol: SSE
+        annotation-scanner:
+          enabled: true
+
+server:
+  port: 8080
+

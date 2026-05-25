@@ -191,6 +191,8 @@
       <li><a href="#module-3">Module 3 - Agent</a></li>
       <li><a href="#module-4">Module 4 - Workflow</a></li>
       <li><a href="#module-5">Module 5 - Memory</a></li>
+      <li><a href="#module-6">Module 6 - MCP</a></li>
+      <li><a href="#module-7">Module 7 - Observability</a></li>
     </ul>
   </nav>
 
@@ -1380,6 +1382,344 @@ New task
 
       <h4>5. Why should document vectors and memory vectors live separately?</h4>
       <p class="answer">They have different lifecycles, privacy rules, deletion needs, metadata, and retrieval semantics, even if both use PGVector under the hood.</p>
+
+      <button class="reveal" type="button" data-toggle-answers>Reveal Answers</button>
+    </div>
+  </section>
+
+  <section id="module-6">
+    <h2>Module 6 - MCP Integration</h2>
+    <p class="meta">Status: implemented and verified with Java and Python tests.</p>
+
+    <div class="callout">
+      <strong>What changed:</strong> the project now has a Spring Boot MCP server sub-project with
+      domain tools, a Python MCP provider boundary, LangChain wrappers for MCP tools, agent routing
+      to an MCP-backed tool, Docker Compose integration, and tests on both sides.
+    </div>
+
+    <h3>What Was Built</h3>
+    <p>
+      Module 6 turns the placeholder <code>mcp-server</code> directory into a Java Spring Boot
+      service. It exposes three research-assistant domain tools: <code>normalize_claim</code>,
+      <code>lookup_venue_metadata</code>, and <code>build_reading_plan</code>. The Python app now has
+      <code>src/genai_lab/mcp</code>, which defines an MCP tool-provider interface, a local fallback
+      provider for tests, an async Streamable HTTP provider for live MCP calls, and LangChain tool
+      wrappers consumed by the Module 3 agent.
+    </p>
+
+    <p>
+      The released Spring AI version used here supports Spring AI <code>@Tool</code> annotations that
+      the MCP server starter auto-converts into MCP tool specifications. The newest Spring AI docs
+      also describe MCP-specific annotations such as <code>@McpTool</code>; the Maven build revealed
+      that those annotations were not available in the resolved release path, so the implementation
+      uses the supported Spring AI tool annotation path. That is a useful production lesson: docs can
+      lead the latest artifact, so compile the integration early.
+    </p>
+
+    <h3>Execution Model Under the Hood</h3>
+    <p>
+      MCP is a protocol boundary. The Python agent should not import Java code, and the Java service
+      should not know about LangGraph state. The Java side exposes typed tools over an MCP transport.
+      The Python side discovers or calls those tools through an MCP client boundary, then wraps them
+      as LangChain tools so the agent can treat local and external tools uniformly.
+    </p>
+
+    <pre><code>Python agent
+  -> LangChain tool wrapper
+  -> McpToolProvider interface
+     -> LocalMcpToolProvider for tests
+     -> StreamableHttpMcpToolProvider for live server calls
+  -> Spring Boot MCP server
+  -> ResearchToolService @Tool methods
+  -> typed Java records returned as MCP tool results
+</code></pre>
+
+    <h3>Java Side</h3>
+    <p>
+      The Java sub-project uses Spring Boot, WebFlux, and the Spring AI MCP server WebFlux starter.
+      <code>ResearchToolService</code> is a Spring component with annotated tool methods. Each method
+      accepts simple schema-friendly parameters and returns Java records. Records are a good fit for
+      tool results because they are immutable, serializable, and explicit.
+    </p>
+
+    <ul>
+      <li><code>normalize_claim</code>: normalizes a raw claim and extracts key terms.</li>
+      <li><code>lookup_venue_metadata</code>: returns provenance hints for venues such as arXiv, NeurIPS, or RFCs.</li>
+      <li><code>build_reading_plan</code>: creates a short study plan for a GenAI engineering topic.</li>
+    </ul>
+
+    <h3>Python Side</h3>
+    <p>
+      <code>McpToolProvider</code> is the Python boundary. The local provider keeps tests stable and
+      lets the agent route to MCP-shaped tools without starting Java. The Streamable HTTP provider
+      uses the official Python MCP SDK and is the integration point for the live Spring Boot server.
+      <code>build_mcp_langchain_tools</code> turns provider calls into LangChain tools named
+      <code>mcp_normalize_claim</code>, <code>mcp_lookup_venue_metadata</code>, and
+      <code>mcp_build_reading_plan</code>.
+    </p>
+
+    <h3>Agent Integration</h3>
+    <p>
+      Module 3's tool registry now includes MCP-backed LangChain tools. The local deterministic agent
+      routes reading-plan requests to <code>mcp_build_reading_plan</code>. In a model-backed run,
+      those same tool names and schemas are available to LangChain's <code>create_agent</code>
+      runtime. This is the point of MCP: tool ownership can move outside Python without changing the
+      agent's high-level orchestration model.
+    </p>
+
+    <h3>Containerization</h3>
+    <p>
+      The MCP server has a multi-stage Dockerfile. The build stage uses Maven and JDK 21 to package
+      the Spring Boot jar; the runtime stage uses a JRE image. Docker Compose already includes
+      <code>mcp-server</code> behind the <code>mcp</code> profile, so the local stack can include the
+      Java tool server when needed.
+    </p>
+
+    <h3>Code References</h3>
+    <ul>
+      <li><code>mcp-server/src/main/java/com/genailab/mcp/ResearchToolService.java</code>: Java domain tool implementations.</li>
+      <li><code>mcp-server/src/main/resources/application.yml</code>: Spring AI MCP server configuration.</li>
+      <li><code>mcp-server/pom.xml</code>: Spring Boot and Spring AI MCP dependencies.</li>
+      <li><code>src/genai_lab/mcp/client.py</code>: Python MCP provider boundary and Streamable HTTP client path.</li>
+      <li><code>src/genai_lab/mcp/langchain_tools.py</code>: LangChain wrappers for MCP tools.</li>
+      <li><code>src/genai_lab/agents/tools.py</code>: MCP tools added to the agent tool registry.</li>
+      <li><code>tests/test_mcp_provider.py</code> and <code>mcp-server/src/test/java/com/genailab/mcp/ResearchToolServiceTests.java</code>: Python and Java verification.</li>
+    </ul>
+
+    <h3>Best Practices Applied</h3>
+    <ul>
+      <li>Keep MCP behind a provider interface so agent code does not depend on transport details.</li>
+      <li>Use explicit, narrow tool schemas and boring structured return types.</li>
+      <li>Keep local fallback tools for deterministic tests, but preserve live-server wiring.</li>
+      <li>Make external tools additive to the LangChain tool registry rather than special-casing them in orchestration.</li>
+      <li>Compile the Java server early because MCP/Spring AI APIs are still moving.</li>
+      <li>Use Docker Compose profiles so the Java tool server can be included without making every local command depend on it.</li>
+    </ul>
+
+    <h3>Gotchas and Failure Modes</h3>
+    <ul>
+      <li><strong>Protocol mismatch:</strong> MCP transports and endpoints vary by server/client version. Test the exact SDK and starter versions together.</li>
+      <li><strong>Docs ahead of artifacts:</strong> annotation names or packages may exist in current docs before they are available in the release you resolved.</li>
+      <li><strong>Schema drift:</strong> if Java tool return shapes change, Python wrappers and agent synthesis may silently degrade.</li>
+      <li><strong>Timeouts:</strong> external tool calls need timeout and retry policy before production traffic.</li>
+      <li><strong>Auth:</strong> local MCP examples often omit authentication; remote MCP servers need identity, authorization, and audit logging.</li>
+      <li><strong>Tool trust:</strong> MCP standardizes tool invocation, not tool correctness. Results still need provenance and validation.</li>
+    </ul>
+
+    <h3>How to Run</h3>
+    <pre><code># Python local MCP fallback
+.venv/bin/python -m genai_lab.mcp.cli normalize_claim "embedding drift hurts retrieval quality"
+
+# Java MCP server tests
+cd mcp-server
+mvn test
+
+# Compose topology including MCP profile
+docker compose --profile app --profile mcp config
+</code></pre>
+
+    <h3>Verification</h3>
+    <p>
+      Module 6 was verified with Python MCP provider tests, the full Python test suite, Java Maven
+      tests, Python syntax compilation, a Python MCP CLI call, an agent CLI call routed to an MCP tool,
+      and Docker Compose config validation. The live Streamable HTTP provider is wired but was not
+      exercised against a running server in this turn.
+    </p>
+
+    <h3>Source Notes</h3>
+    <p>
+      The implementation follows current official documentation for
+      <a href="https://docs.spring.io/spring-ai/reference/api/mcp/mcp-server-boot-starter-docs.html">Spring AI MCP server boot starter</a>,
+      <a href="https://docs.spring.io/spring-ai/reference/api/mcp/mcp-stdio-sse-server-boot-starter-docs.html">Spring AI MCP WebFlux/SSE server support</a>,
+      <a href="https://docs.spring.io/spring-ai/reference/api/mcp/mcp-annotations-server.html">Spring AI MCP annotation docs</a>,
+      and <a href="https://py.sdk.modelcontextprotocol.io/client/">the official Python MCP client SDK</a>.
+    </p>
+
+    <div class="quiz">
+      <h3>Quiz</h3>
+
+      <h4>1. Why put MCP behind a Python provider interface?</h4>
+      <p class="answer">It keeps agent logic independent of transport details, lets tests use a deterministic fallback, and allows the live provider to change without rewriting orchestration.</p>
+
+      <h4>2. What does MCP standardize?</h4>
+      <p class="answer">It standardizes how clients discover and invoke external tools, resources, and prompts. It does not guarantee that a tool result is correct or trusted.</p>
+
+      <h4>3. Why use Java records for MCP tool results?</h4>
+      <p class="answer">They make return schemas explicit, immutable, and easy for Spring/Jackson tooling to serialize.</p>
+
+      <h4>4. What did the annotation mismatch teach us?</h4>
+      <p class="answer">Fast-moving docs and artifact releases can differ. Compile the integration early and pin versions deliberately.</p>
+
+      <h4>5. Why not make every test start the Java MCP server?</h4>
+      <p class="answer">Most tests should verify contracts deterministically and quickly. A smaller integration test can cover the live server path without making the whole suite fragile.</p>
+
+      <button class="reveal" type="button" data-toggle-answers>Reveal Answers</button>
+    </div>
+  </section>
+
+  <section id="module-7">
+    <h2>Module 7 - Observability & Evaluation</h2>
+    <p class="meta">Status: implemented and verified with local evaluation, trace, and prompt-version tests.</p>
+
+    <div class="callout">
+      <strong>What changed:</strong> the lab now has a local JSONL trace sink, LangSmith environment
+      wiring, a small prompt registry, a RAG evaluation dataset, RAGAS-style local metrics, and an
+      evaluation CLI. This gives us production-shaped observability without making local tests depend
+      on external SaaS or model-judge calls.
+    </div>
+
+    <h3>Why LangSmith</h3>
+    <p>
+      Module 7 chooses LangSmith over LangFuse for the primary tracing and prompt-versioning story
+      because this project is already built around LangChain and LangGraph. LangSmith gives automatic
+      tracing hooks for LangChain agents and LangGraph workflows, plus prompt management, datasets,
+      and evaluations in the same ecosystem. LangFuse is a strong open-source option and would be a
+      reasonable production choice for teams that want self-hosting or vendor-neutral OpenTelemetry
+      pipelines first. For this lab, LangSmith reduces integration friction and lets the study path
+      focus on agent/RAG failure analysis rather than instrumentation plumbing.
+    </p>
+
+    <h3>What Was Built</h3>
+    <p>
+      <code>src/genai_lab/observability</code> contains the tracing and prompt-versioning layer.
+      <code>JsonlTraceWriter</code> writes append-only JSONL events for local development and CI.
+      It redacts sensitive-looking keys before writing. <code>build_langsmith_environment</code>
+      returns the environment contract needed to enable LangSmith without mutating global process
+      state. <code>PromptRegistry</code> registers prompt ids such as <code>rag-answer-v1</code> and
+      <code>agent-supervisor-v1</code>, which is the local counterpart to LangSmith prompt commits.
+    </p>
+
+    <p>
+      <code>src/genai_lab/evaluation</code> contains a deterministic RAG evaluation runner. The
+      dataset lives in <code>data/evaluation/rag_eval_set.jsonl</code>. Each case has a question,
+      a reference answer, and required terms. The runner calls the local RAG engine, then scores the
+      result for faithfulness, answer relevance, context recall, citation coverage, and a weighted
+      overall score.
+    </p>
+
+    <h3>Execution Model Under the Hood</h3>
+    <p>
+      Production observability is not just logs. A useful trace has a stable run id, span names,
+      inputs, outputs, timing, status, metadata, and enough structure to join retrieval, model calls,
+      tools, workflow nodes, memory reads, and MCP calls. In LangChain/LangGraph production paths,
+      LangSmith can capture those spans automatically when tracing is enabled. In local deterministic
+      paths, the JSONL writer captures the same kind of event shape so tests and examples stay
+      inspectable.
+    </p>
+
+    <pre><code>request
+  -> RAG / agent / graph entrypoint
+  -> local TraceEvent or LangSmith run
+     -> inputs: question/task, tool args after redaction
+     -> outputs: answer preview, citations, warnings, tools used
+     -> metadata: prompt version, retrieval strategy, provider profile
+  -> evaluation runner
+     -> faithfulness
+     -> answer relevance
+     -> context recall
+     -> citation coverage
+</code></pre>
+
+    <p>
+      The local evaluation metrics are deliberately lightweight. They use lexical overlap rather than
+      an LLM judge, so they are not a substitute for RAGAS in production. They are a CI gate: if a
+      retrieval change stops surfacing key evidence, citation coverage disappears, or an answer drifts
+      away from the question, the suite should flag it cheaply and deterministically. For production,
+      this same dataset should be promoted into LangSmith or RAGAS with model-judged faithfulness and
+      context recall.
+    </p>
+
+    <h3>Prompt Versioning Strategy</h3>
+    <p>
+      Prompts are versioned by id, not by file name alone. The id appears in trace metadata so an
+      evaluation failure can be tied back to the exact prompt contract used for a run. In production,
+      prompt edits should be committed in LangSmith, tagged by environment, and rolled out through a
+      profile flag. The anti-pattern is changing a prompt string inline and then trying to explain a
+      quality regression from application logs alone.
+    </p>
+
+    <h3>Agentic Loop Logging</h3>
+    <p>
+      Agent logs must expose decision quality without leaking secrets or drowning operators. The
+      useful grain is one event per loop or tool call: chosen tool, attempt number, bounded input
+      summary, bounded output summary, status, retry count, token budget pressure, and final routing
+      decision. Avoid logging full prompts, raw retrieved documents, API keys, or entire memory
+      payloads by default. The local trace writer uses preview fields and redaction because a trace
+      system that becomes a shadow data lake is a production incident waiting to happen.
+    </p>
+
+    <h3>Code References</h3>
+    <ul>
+      <li><code>src/genai_lab/observability/tracing.py</code>: local JSONL trace sink, span timer, redaction, and LangSmith env contract.</li>
+      <li><code>src/genai_lab/observability/prompt_registry.py</code>: local prompt ids, versions, owners, and changelogs.</li>
+      <li><code>src/genai_lab/evaluation/metrics.py</code>: deterministic RAGAS-style metrics.</li>
+      <li><code>src/genai_lab/evaluation/runner.py</code>: evaluation dataset loader and RAG evaluation runner.</li>
+      <li><code>src/genai_lab/evaluation/cli.py</code>: command-line evaluation output for local runs.</li>
+      <li><code>data/evaluation/rag_eval_set.jsonl</code>: seed evaluation cases.</li>
+      <li><code>src/genai_lab/rag/cli.py</code> and <code>src/genai_lab/agents/cli.py</code>: optional <code>--trace</code> hooks.</li>
+    </ul>
+
+    <h3>Best Practices Applied</h3>
+    <ul>
+      <li>Use LangSmith for production tracing because it matches the LangChain/LangGraph stack.</li>
+      <li>Keep a local trace sink so tests and offline work do not require credentials.</li>
+      <li>Redact sensitive keys at the trace boundary.</li>
+      <li>Record prompt version metadata with every traced RAG run.</li>
+      <li>Start with small gold datasets and deterministic CI metrics before adding model judges.</li>
+      <li>Separate quality metrics from operational metrics: faithfulness is not latency, and latency is not correctness.</li>
+    </ul>
+
+    <h3>Gotchas and Failure Modes</h3>
+    <ul>
+      <li><strong>Trace leakage:</strong> traces often contain user data, retrieved documents, and tool payloads. Treat them as sensitive production data.</li>
+      <li><strong>Judge over-trust:</strong> LLM-as-judge metrics can be noisy, biased, or prompt-sensitive. Use calibration sets and human review.</li>
+      <li><strong>Aggregate blindness:</strong> a healthy average score can hide failures on one critical document class or user segment.</li>
+      <li><strong>Prompt drift:</strong> changing prompts without version metadata makes regressions almost impossible to root-cause.</li>
+      <li><strong>Agent loop spam:</strong> logging every token or full prompt makes traces expensive and hard to inspect.</li>
+      <li><strong>Offline metric limits:</strong> lexical metrics miss paraphrases and can reward copied context, so they are a smoke alarm, not a judge.</li>
+    </ul>
+
+    <h3>How to Run</h3>
+    <pre><code># Run local RAG evaluation
+.venv/bin/python -m genai_lab.evaluation.cli
+
+# Write local traces
+.venv/bin/python -m genai_lab.rag.cli "What is embedding drift?" --trace
+.venv/bin/python -m genai_lab.agents.cli "Build a reading plan for MCP integration" --trace
+</code></pre>
+
+    <h3>Verification</h3>
+    <p>
+      Module 7 was verified with tests for trace redaction, prompt rendering, LangSmith environment
+      construction, RAG metric scoring, and the local evaluation runner. The evaluation CLI and trace
+      flags were also smoke-tested from the command line.
+    </p>
+
+    <h3>Source Notes</h3>
+    <p>
+      The design follows current documentation for
+      <a href="https://docs.langchain.com/oss/python/langchain/observability">LangChain/LangSmith observability</a>,
+      <a href="https://docs.langchain.com/langsmith/manage-prompts">LangSmith prompt management</a>,
+      and <a href="https://docs.ragas.io/en/latest/concepts/metrics/">RAGAS metrics such as faithfulness, answer relevance, and context recall</a>.
+    </p>
+
+    <div class="quiz">
+      <h3>Quiz</h3>
+
+      <h4>1. Why keep a local JSONL trace sink if LangSmith is the production choice?</h4>
+      <p class="answer">It keeps tests deterministic, supports offline development, and preserves the same event shape before credentials or network services are available.</p>
+
+      <h4>2. Why put prompt version ids in trace metadata?</h4>
+      <p class="answer">Quality regressions need to be tied to the prompt contract that produced them. Without prompt version metadata, tracing cannot explain prompt drift.</p>
+
+      <h4>3. What is faithfulness measuring?</h4>
+      <p class="answer">Whether answer claims are supported by retrieved context. It is different from general factual correctness.</p>
+
+      <h4>4. Why are lexical local metrics not enough for production RAG evaluation?</h4>
+      <p class="answer">They miss paraphrases, cannot reason over claims, and can reward copied context. Production evaluation should add model judges, calibration sets, and human review.</p>
+
+      <h4>5. What should agentic loop logs avoid?</h4>
+      <p class="answer">Full secrets, unbounded prompts, raw retrieved documents, and unlimited memory/tool payloads. Logs should be bounded, redacted, and useful for debugging decisions.</p>
 
       <button class="reveal" type="button" data-toggle-answers>Reveal Answers</button>
     </div>

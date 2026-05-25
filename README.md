@@ -3,7 +3,7 @@
 Generative AI Engineering Learning Lab for building a production-realistic,
 agentic AI system in Python with RAG, agents, memory, orchestration, and MCP.
 
-Current phase: **Module 5 - Memory & Persistence**.
+Current phase: **Module 7 - Observability & Evaluation**.
 
 Start with the cumulative study document:
 
@@ -61,4 +61,34 @@ Run the local memory demo:
 
 ```bash
 .venv/bin/python -m genai_lab.memory.cli "embedding drift preferences"
+```
+
+## Module 6 MCP
+
+Run Python MCP fallback tools:
+
+```bash
+.venv/bin/python -m genai_lab.mcp.cli normalize_claim "embedding drift hurts retrieval quality"
+```
+
+Test the Spring Boot MCP server:
+
+```bash
+cd mcp-server
+mvn test
+```
+
+## Module 7 observability and evaluation
+
+Run the local RAG evaluation suite:
+
+```bash
+.venv/bin/python -m genai_lab.evaluation.cli
+```
+
+Write a local JSONL trace while running RAG or the agent:
+
+```bash
+.venv/bin/python -m genai_lab.rag.cli "What is embedding drift?" --trace
+.venv/bin/python -m genai_lab.agents.cli "Build a reading plan for MCP integration" --trace
 ```

@@ -30,6 +30,11 @@ class VectorStoreProvider(StrEnum):
     PINECONE = "pinecone"
 
 
+class ObservabilityProvider(StrEnum):
+    LOCAL = "local"
+    LANGSMITH = "langsmith"
+
+
 class Settings(BaseSettings):
     """Validated application settings loaded from env and profile files."""
 
@@ -77,6 +82,11 @@ class Settings(BaseSettings):
     memory_retrieval_limit: int = 5
 
     mcp_server_url: str = "http://mcp-server:8080"
+    observability_provider: ObservabilityProvider = ObservabilityProvider.LOCAL
+    trace_log_dir: str = ".cache/genai_lab/traces"
+    prompt_registry_version: str = "rag-answer-v1"
+    evaluation_dataset_path: str = "data/evaluation/rag_eval_set.jsonl"
+    langsmith_project: str = "genai-lab"
     langsmith_tracing: bool = False
     langsmith_api_key: SecretStr | None = None
 
