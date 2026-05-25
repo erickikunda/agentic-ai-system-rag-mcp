@@ -22,6 +22,7 @@ dependencies = [
 genai-lab-ingest = "genai_lab.ingestion.cli:main"
 genai-lab-rag = "genai_lab.rag.cli:main"
 genai-lab-agent = "genai_lab.agents.cli:main"
+genai-lab-workflow = "genai_lab.workflows.cli:main"
 
 [dependency-groups]
 dev = [

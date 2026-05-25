@@ -71,6 +71,7 @@ class Settings(BaseSettings):
     agent_max_iterations: int = 4
     agent_tool_retry_attempts: int = 2
     agent_token_budget: int = 2200
+    workflow_max_cycles: int = 2
 
     mcp_server_url: str = "http://mcp-server:8080"
     langsmith_tracing: bool = False

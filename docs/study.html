@@ -136,6 +136,43 @@
       font: inherit;
       cursor: pointer;
     }
+
+    .module-nav {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
+      padding: 14px 16px;
+      margin: 24px 0 32px;
+    }
+
+    .module-nav h2 {
+      font-size: 1rem;
+      margin: 0 0 10px;
+    }
+
+    .module-nav ul {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }
+
+    .module-nav a {
+      display: inline-block;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      padding: 6px 9px;
+      text-decoration: none;
+      color: var(--fg);
+      background: var(--bg);
+    }
+
+    .module-nav a:hover {
+      border-color: var(--accent-strong);
+      color: var(--accent-strong);
+    }
   </style>
 </head>
 <body>
@@ -144,6 +181,17 @@
     <h1>genai-lab Study Notes</h1>
     <p class="meta">Cumulative HTML study document for the Generative AI Engineering Learning Lab.</p>
   </header>
+
+  <nav class="module-nav" aria-labelledby="module-navigation">
+    <h2 id="module-navigation">Module Navigation</h2>
+    <ul>
+      <li><a href="#module-0">Module 0 - Design</a></li>
+      <li><a href="#module-1">Module 1 - Ingestion</a></li>
+      <li><a href="#module-2">Module 2 - RAG</a></li>
+      <li><a href="#module-3">Module 3 - Agent</a></li>
+      <li><a href="#module-4">Module 4 - Workflow</a></li>
+    </ul>
+  </nav>
 
   <section id="module-0">
     <h2>Module 0 - Design & Architecture</h2>
@@ -1003,6 +1051,166 @@ ollama pull nomic-embed-text
 
       <h4>5. Why keep model construction outside the agent module?</h4>
       <p class="answer">It preserves provider switching. The agent should consume model and tool interfaces, not know whether OpenAI, Gemini, Claude, or Ollama constructed the model.</p>
+
+      <button class="reveal" type="button" data-toggle-answers>Reveal Answers</button>
+    </div>
+  </section>
+
+  <section id="module-4">
+    <h2>Module 4 - Stateful Multi-Agent Workflow</h2>
+    <p class="meta">Status: implemented and verified with LangGraph checkpointed execution.</p>
+
+    <div class="callout">
+      <strong>What changed:</strong> the project now has a LangGraph state machine that coordinates
+      planner, evidence worker, risk worker, synthesizer, verifier, human-review interrupt, and
+      finalizer nodes. It uses typed shared state, conditional routing, parallel worker fan-out,
+      checkpointing, interrupts, and explicit cycle limits.
+    </div>
+
+    <h3>What Was Built</h3>
+    <p>
+      Module 4 adds <code>src/genai_lab/workflows</code>. The graph in <code>graph.py</code> is a
+      supervisor-style workflow for research answers. It starts with a planner, fans out to evidence
+      retrieval and risk assessment workers, merges those results in synthesis, verifies confidence,
+      optionally interrupts for human review, then finalizes the answer.
+    </p>
+
+    <p>
+      This is the point where an "agent" becomes a system. Module 3 could call tools and return an
+      answer. Module 4 decides when tool output is enough, when risk requires a human, where retry
+      cycles are allowed, and how state survives across an interrupt.
+    </p>
+
+    <h3>Execution Model Under the Hood</h3>
+    <p>
+      LangGraph runs the workflow as a stateful graph. Each node receives the current
+      <code>ResearchWorkflowState</code> and returns a partial state update. Fields such as
+      <code>evidence</code>, <code>citations</code>, <code>risk_flags</code>, and
+      <code>audit_log</code> use reducer annotations so parallel branches can safely append to shared
+      state instead of overwriting each other.
+    </p>
+
+    <pre><code>START
+  -> plan_task
+  -> [retrieve_evidence, assess_risk]   # fan-out workers
+  -> synthesize_answer                  # fan-in
+  -> verify_answer
+     -> human_review interrupt          # if risky or low confidence
+     -> plan_task                       # if retry is allowed
+     -> finalize
+  -> END
+</code></pre>
+
+    <p>
+      The graph is compiled with <code>InMemorySaver</code>, which gives each invocation a checkpoint
+      thread. The CLI creates a thread id for each run. Tests use fixed thread ids so an interrupted
+      workflow can be resumed with <code>Command(resume="approved")</code>.
+    </p>
+
+    <h3>Supervisor Pattern</h3>
+    <p>
+      The planner and verifier act as supervisors. The planner writes the high-level plan and cycle
+      count. The verifier decides whether to finalize, retry, or interrupt. The worker nodes do not
+      decide global control flow; they do specialized work and report evidence or risk signals. This
+      separation is what keeps multi-agent systems from turning into several agents all trying to be
+      in charge at once.
+    </p>
+
+    <h3>Parallel Node Execution</h3>
+    <p>
+      <code>route_after_plan</code> returns both <code>retrieve_evidence</code> and
+      <code>assess_risk</code>. LangGraph schedules them in the same graph step. Their outputs are
+      merged through reducers in the state schema. In a production deployment these workers could be
+      expensive and independent: one might call retrieval tools while another runs policy checks or
+      evaluates the user request.
+    </p>
+
+    <h3>Human-in-the-Loop Interrupts</h3>
+    <p>
+      The <code>human_review</code> node calls LangGraph's <code>interrupt</code> function with the
+      draft answer, risk flags, confidence, and review request. The graph stops and preserves state in
+      the checkpointer. A caller can resume with a decision such as <code>approved</code>,
+      <code>revise</code>, or <code>rejected</code>. This is the right pattern for review gates:
+      pause with context, then resume from the same state instead of replaying the whole workflow.
+    </p>
+
+    <h3>Cycle Detection and Checkpointing</h3>
+    <p>
+      The state tracks <code>cycle_count</code> and <code>max_cycles</code>. Retry loops are useful,
+      but unbounded agent loops are an outage pattern. Module 4 keeps the loop small and visible. The
+      checkpoint thread id is also explicit, which matters later for persistence, auditability, and
+      resuming long-running workflows.
+    </p>
+
+    <h3>Code References</h3>
+    <ul>
+      <li><code>src/genai_lab/workflows/state.py</code>: typed state schema and reducer annotations.</li>
+      <li><code>src/genai_lab/workflows/graph.py</code>: graph nodes, conditional edges, interrupts, and compilation.</li>
+      <li><code>src/genai_lab/workflows/cli.py</code>: workflow CLI and checkpoint thread ids.</li>
+      <li><code>tests/test_workflow_graph.py</code>: finalization, interrupt/resume, and graph-shape tests.</li>
+    </ul>
+
+    <h3>Best Practices Applied</h3>
+    <ul>
+      <li>Use typed shared state so node contracts are visible.</li>
+      <li>Keep supervisor routing separate from worker execution.</li>
+      <li>Use reducers for state fields updated by parallel branches.</li>
+      <li>Interrupt with enough context for a human to make a decision.</li>
+      <li>Use checkpoint thread ids for resumability and audit trails.</li>
+      <li>Put hard limits on cycles before adding more autonomous behavior.</li>
+    </ul>
+
+    <h3>Gotchas and Failure Modes</h3>
+    <ul>
+      <li><strong>Reducer mistakes:</strong> parallel branches that write the same key need reducers or one branch can overwrite another.</li>
+      <li><strong>Supervisor confusion:</strong> if every node routes globally, the graph becomes harder to reason about than a plain loop.</li>
+      <li><strong>Interrupt without context:</strong> a human-review gate is useless if it omits the draft, risk reason, or confidence signal.</li>
+      <li><strong>Unbounded retries:</strong> agentic cycles need explicit stop conditions and audit logs.</li>
+      <li><strong>Checkpoint identity drift:</strong> resuming requires the same thread id and checkpointer; otherwise the workflow cannot recover prior state.</li>
+      <li><strong>Hidden side effects:</strong> irreversible tool calls should happen behind review gates or idempotent write patterns.</li>
+    </ul>
+
+    <h3>How to Run</h3>
+    <pre><code># Normal workflow run
+.venv/bin/python -m genai_lab.workflows.cli "What is embedding drift?"
+
+# A review-worthy request will interrupt for human review
+.venv/bin/python -m genai_lab.workflows.cli "Guarantee this production answer is always correct."
+</code></pre>
+
+    <h3>Verification</h3>
+    <p>
+      Module 4 was verified with the workflow-specific tests, the full test suite, syntax
+      compilation, Docker Compose config validation, and the workflow CLI. The workflow finalizes a
+      normal embedding-drift question and interrupts/resumes correctly for a review-worthy prompt.
+    </p>
+
+    <h3>Source Notes</h3>
+    <p>
+      The implementation follows current LangGraph documentation for
+      <a href="https://docs.langchain.com/oss/python/langgraph/quickstart">StateGraph workflows</a>,
+      <a href="https://docs.langchain.com/oss/python/langgraph/interrupts">human-in-the-loop interrupts</a>,
+      <a href="https://docs.langchain.com/oss/python/langgraph/persistence">checkpointing and persistence</a>,
+      and <a href="https://docs.langchain.com/oss/python/langgraph/use-graph-api">conditional edges and graph APIs</a>.
+    </p>
+
+    <div class="quiz">
+      <h3>Quiz</h3>
+
+      <h4>1. Why does shared graph state need reducers?</h4>
+      <p class="answer">Parallel nodes may update the same key in the same graph step. Reducers define how those updates merge instead of overwriting each other.</p>
+
+      <h4>2. What is the supervisor pattern buying us?</h4>
+      <p class="answer">It centralizes routing decisions in planner/verifier nodes while worker nodes focus on specialized tasks, making control flow easier to test and inspect.</p>
+
+      <h4>3. Why is an interrupt better than returning "ask a human" text?</h4>
+      <p class="answer">An interrupt preserves workflow state and pauses execution at the exact review point, so the graph can resume without replaying expensive or side-effectful steps.</p>
+
+      <h4>4. What failure mode does cycle_count prevent?</h4>
+      <p class="answer">Unbounded retry loops, where agents keep planning, retrieving, or revising without a clear stop condition.</p>
+
+      <h4>5. Why do checkpoint thread ids matter?</h4>
+      <p class="answer">They identify the saved workflow state. Resuming an interrupted or long-running graph requires the same thread id and checkpointer.</p>
 
       <button class="reveal" type="button" data-toggle-answers>Reveal Answers</button>
     </div>

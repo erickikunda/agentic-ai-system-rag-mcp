@@ -3,7 +3,7 @@
 Generative AI Engineering Learning Lab for building a production-realistic,
 agentic AI system in Python with RAG, agents, memory, orchestration, and MCP.
 
-Current phase: **Module 3 - Tool-Using Agent**.
+Current phase: **Module 4 - Stateful Multi-Agent Workflow**.
 
 Start with the cumulative study document:
 
@@ -45,4 +45,12 @@ Run the local tool-using research agent:
 
 ```bash
 .venv/bin/python -m genai_lab.agents.cli "What is embedding drift?"
+```
+
+## Module 4 workflow
+
+Run the LangGraph research workflow:
+
+```bash
+.venv/bin/python -m genai_lab.workflows.cli "What is embedding drift?"
 ```
