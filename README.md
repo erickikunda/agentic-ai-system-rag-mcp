@@ -8,6 +8,15 @@ Current phase: **Module 7 - Observability & Evaluation**.
 Start with the cumulative study document:
 
 - `docs/study.html`
+- `docs/full-stack-validation.md`
+
+## CI
+
+The GitHub Actions workflow in `.github/workflows/ci.yml` runs:
+
+- Python install, compile check, and tests
+- Spring Boot MCP Maven tests
+- Docker Compose topology validation
 
 ## Module 1 ingestion
 
