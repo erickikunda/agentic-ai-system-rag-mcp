@@ -190,6 +190,7 @@
       <li><a href="#module-2">Module 2 - RAG</a></li>
       <li><a href="#module-3">Module 3 - Agent</a></li>
       <li><a href="#module-4">Module 4 - Workflow</a></li>
+      <li><a href="#module-5">Module 5 - Memory</a></li>
     </ul>
   </nav>
 
@@ -1211,6 +1212,174 @@ ollama pull nomic-embed-text
 
       <h4>5. Why do checkpoint thread ids matter?</h4>
       <p class="answer">They identify the saved workflow state. Resuming an interrupted or long-running graph requires the same thread id and checkpointer.</p>
+
+      <button class="reveal" type="button" data-toggle-answers>Reveal Answers</button>
+    </div>
+  </section>
+
+  <section id="module-5">
+    <h2>Module 5 - Memory & Persistence</h2>
+    <p class="meta">Status: implemented and verified with local LangGraph-store-backed memory.</p>
+
+    <div class="callout">
+      <strong>What changed:</strong> the project now has a memory subsystem with bounded
+      short-term conversation memory, deterministic summarization, scoped long-term memory,
+      semantic/episodic/entity memory types, LangGraph store integration, PGVector table design, a
+      CLI demo, and tests.
+    </div>
+
+    <h3>What Was Built</h3>
+    <p>
+      Module 5 adds <code>src/genai_lab/memory</code>. The main facade is
+      <code>MemoryManager</code>, which coordinates a <code>ConversationBuffer</code> for short-term
+      thread memory and a <code>LongTermMemoryStore</code> for durable user-scoped memory. It can
+      store conversation turns, remember semantic facts, extract entity memories, and build a
+      prompt-ready <code>MemorySnapshot</code>.
+    </p>
+
+    <p>
+      The memory subsystem is intentionally conservative. It does not automatically stuff every prior
+      conversation into the prompt. It stores scoped records, retrieves only a small relevant set, and
+      keeps summaries separate from raw turns. That separation matters because memory bugs usually
+      become privacy, relevance, or cost bugs.
+    </p>
+
+    <h3>Execution Model Under the Hood</h3>
+    <p>
+      Short-term memory is the current thread's working context. <code>ConversationBuffer</code>
+      stores recent turns and creates a rolling summary when the token estimate crosses a threshold.
+      The summary is deterministic in this module so tests remain stable. In a model-backed system,
+      the same boundary would call a summarization chain with strict instructions to preserve facts,
+      decisions, open questions, and user preferences.
+    </p>
+
+    <p>
+      Long-term memory is stored through LangGraph's store API. Module 5 uses
+      <code>InMemoryStore</code> for local tests and deterministic lexical ranking for retrieval. The
+      production design swaps this boundary to PGVector so semantic, episodic, and entity memories can
+      be embedded and searched across conversations. The point is the interface: graph checkpoints
+      preserve thread state, while the store preserves memories across threads.
+    </p>
+
+    <pre><code>Conversation turn
+  -> short-term buffer
+  -> summarize if budget is exceeded
+  -> episodic memory record
+  -> entity extraction
+  -> entity memory records
+
+User preference or durable fact
+  -> semantic memory record
+
+New task
+  -> render short-term context
+  -> retrieve semantic + episodic memories
+  -> retrieve entity memories
+  -> build MemorySnapshot
+</code></pre>
+
+    <h3>Memory Types</h3>
+    <ul>
+      <li><strong>Short-term memory:</strong> recent conversation state for the active thread. Useful for local coherence and unresolved references.</li>
+      <li><strong>Semantic memory:</strong> durable facts and preferences, such as "the user prefers trade-off explanations."</li>
+      <li><strong>Episodic memory:</strong> past interactions and outcomes, useful when the agent needs to remember what happened before.</li>
+      <li><strong>Entity memory:</strong> named people, systems, tools, projects, or concepts that recur across tasks.</li>
+      <li><strong>Procedural memory:</strong> reusable instructions or skills. Module 5 models the category but does not yet add writable procedural memory.</li>
+    </ul>
+
+    <h3>LangChain Memory Abstractions</h3>
+    <p>
+      Older LangChain memory classes such as conversation buffer memory are no longer the best anchor
+      for production agent systems. Modern LangChain and LangGraph push memory toward explicit graph
+      state, checkpointing, stores, and message history boundaries. That is the right direction:
+      agent tool calls, structured outputs, interrupts, and long-running workflows need memory to be
+      visible in state and persistence layers, not hidden in a chain object.
+    </p>
+
+    <h3>PGVector as Memory Store</h3>
+    <p>
+      <code>pgvector_design.py</code> records the production table shape for long-term memory:
+      memory id, user scope, agent scope, kind, text, metadata, embedding, creation time, and last
+      access time. In production, semantic search should filter by scope and kind before ranking by
+      vector similarity. The same Postgres/PGVector instance can support both document chunks and
+      memory records, but they should be separate tables or collections because they have different
+      lifecycles, deletion semantics, and privacy rules.
+    </p>
+
+    <h3>Summarization Strategy</h3>
+    <p>
+      Summarization is a compression policy, not a cleanup chore. A useful memory summary preserves
+      stable preferences, decisions, constraints, unresolved questions, and commitments. It should not
+      preserve every tool output. Module 5 summarizes older turns when the short-term buffer crosses a
+      token threshold, then keeps the latest turn raw. That gives the next agent step both continuity
+      and recency.
+    </p>
+
+    <h3>Code References</h3>
+    <ul>
+      <li><code>src/genai_lab/memory/short_term.py</code>: bounded conversation buffer and deterministic summary policy.</li>
+      <li><code>src/genai_lab/memory/store.py</code>: LangGraph-store-backed long-term memory and scoped search.</li>
+      <li><code>src/genai_lab/memory/entity.py</code>: local entity extraction for durable entity records.</li>
+      <li><code>src/genai_lab/memory/manager.py</code>: facade that combines short-term, semantic, episodic, and entity memory.</li>
+      <li><code>src/genai_lab/memory/pgvector_design.py</code>: production PGVector table design.</li>
+      <li><code>tests/test_memory_manager.py</code>: tests for summarization, retrieval, episodic/entity writes, and entity extraction.</li>
+    </ul>
+
+    <h3>Best Practices Applied</h3>
+    <ul>
+      <li>Scope memory by user and agent to prevent cross-user leakage.</li>
+      <li>Separate checkpoints, short-term memory, and long-term memory.</li>
+      <li>Store memory records with kind and metadata so retrieval can filter before ranking.</li>
+      <li>Summarize old turns instead of replaying unbounded history.</li>
+      <li>Keep entity memory conservative to avoid polluting future prompts.</li>
+      <li>Use a store boundary that can move from local tests to PGVector without changing callers.</li>
+    </ul>
+
+    <h3>Gotchas and Failure Modes</h3>
+    <ul>
+      <li><strong>Memory poisoning:</strong> user-provided content can become persistent instruction if writes are not filtered.</li>
+      <li><strong>Cross-domain leakage:</strong> memories from one task or user can inappropriately influence another if scope is wrong.</li>
+      <li><strong>Context bloat:</strong> loading too many memories is just a slower version of loading the whole chat history.</li>
+      <li><strong>Stale preferences:</strong> durable facts need update and deletion semantics, not only append behavior.</li>
+      <li><strong>Embedding drift:</strong> memory vectors need the same embedding-version discipline as document vectors.</li>
+      <li><strong>Summary loss:</strong> bad summaries can erase caveats or invent continuity that never happened.</li>
+    </ul>
+
+    <h3>How to Run</h3>
+    <pre><code>.venv/bin/python -m genai_lab.memory.cli "embedding drift preferences"</code></pre>
+
+    <h3>Verification</h3>
+    <p>
+      Module 5 was verified with memory-specific tests, the CLI demo, and syntax compilation. The
+      CLI stores two semantic facts and one conversation turn, then retrieves memory for an embedding
+      drift preference query.
+    </p>
+
+    <h3>Source Notes</h3>
+    <p>
+      The design follows current LangChain/LangGraph documentation for
+      <a href="https://docs.langchain.com/oss/python/concepts/memory">memory concepts</a>,
+      <a href="https://docs.langchain.com/oss/python/langgraph/persistence">LangGraph persistence and stores</a>,
+      and <a href="https://docs.langchain.com/oss/python/deepagents/long-term-memory">long-term memory scope patterns</a>.
+    </p>
+
+    <div class="quiz">
+      <h3>Quiz</h3>
+
+      <h4>1. Why separate short-term and long-term memory?</h4>
+      <p class="answer">Short-term memory supports the active thread; long-term memory persists across threads. Mixing them causes context bloat, stale recall, and privacy problems.</p>
+
+      <h4>2. What should semantic memory store?</h4>
+      <p class="answer">Durable facts, preferences, and stable user or domain knowledge that should be retrievable in future sessions.</p>
+
+      <h4>3. Why is user scoping mandatory?</h4>
+      <p class="answer">Without user scope, one user's preferences or sensitive history can leak into another user's context.</p>
+
+      <h4>4. Why is summarization risky?</h4>
+      <p class="answer">A summary can drop caveats, overstate certainty, or invent continuity. It must preserve decisions, constraints, and unresolved questions carefully.</p>
+
+      <h4>5. Why should document vectors and memory vectors live separately?</h4>
+      <p class="answer">They have different lifecycles, privacy rules, deletion needs, metadata, and retrieval semantics, even if both use PGVector under the hood.</p>
 
       <button class="reveal" type="button" data-toggle-answers>Reveal Answers</button>
     </div>

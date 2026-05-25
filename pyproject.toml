@@ -12,6 +12,7 @@ dependencies = [
   "llama-index-embeddings-openai>=0.3",
   "llama-index-readers-file>=0.4",
   "llama-index-vector-stores-postgres>=0.4",
+  "mcp>=1.20",
   "pydantic>=2.8",
   "pydantic-settings>=2.4",
   "psycopg[binary]>=3.2",
@@ -23,6 +24,8 @@ genai-lab-ingest = "genai_lab.ingestion.cli:main"
 genai-lab-rag = "genai_lab.rag.cli:main"
 genai-lab-agent = "genai_lab.agents.cli:main"
 genai-lab-workflow = "genai_lab.workflows.cli:main"
+genai-lab-memory = "genai_lab.memory.cli:main"
+genai-lab-mcp = "genai_lab.mcp.cli:main"
 
 [dependency-groups]
 dev = [

@@ -72,6 +72,9 @@ class Settings(BaseSettings):
     agent_tool_retry_attempts: int = 2
     agent_token_budget: int = 2200
     workflow_max_cycles: int = 2
+    memory_buffer_max_turns: int = 6
+    memory_summary_trigger_tokens: int = 500
+    memory_retrieval_limit: int = 5
 
     mcp_server_url: str = "http://mcp-server:8080"
     langsmith_tracing: bool = False
