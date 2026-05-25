@@ -1,0 +1,685 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>genai-lab Study Notes</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f7f7f4;
+      --fg: #202124;
+      --muted: #62665f;
+      --line: #d9d8d1;
+      --accent: #176b87;
+      --accent-strong: #0f4c5c;
+      --code-bg: #ecebe4;
+      --panel: #ffffff;
+      --warn: #8a4b08;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #181a1b;
+        --fg: #ecebe7;
+        --muted: #b4b1aa;
+        --line: #373a3c;
+        --accent: #7cc6d8;
+        --accent-strong: #9ad9e7;
+        --code-bg: #25282a;
+        --panel: #202326;
+        --warn: #f0b35a;
+      }
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.58;
+      background: var(--bg);
+      color: var(--fg);
+    }
+
+    main {
+      width: min(1120px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 48px 0 72px;
+    }
+
+    header {
+      border-bottom: 1px solid var(--line);
+      margin-bottom: 36px;
+      padding-bottom: 24px;
+    }
+
+    h1, h2, h3, h4 {
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+
+    h1 { font-size: clamp(2rem, 4vw, 3.25rem); margin: 0 0 8px; }
+    h2 { font-size: 1.75rem; margin-top: 40px; }
+    h3 { font-size: 1.25rem; margin-top: 28px; }
+    h4 { font-size: 1rem; margin: 18px 0 8px; }
+
+    p, li { max-width: 86ch; }
+    a { color: var(--accent-strong); }
+    code { background: var(--code-bg); padding: 0.08rem 0.28rem; border-radius: 4px; }
+    pre {
+      overflow-x: auto;
+      background: var(--code-bg);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 16px;
+      line-height: 1.35;
+    }
+
+    .meta {
+      color: var(--muted);
+      margin: 0;
+    }
+
+    .callout {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-left: 4px solid var(--accent);
+      border-radius: 6px;
+      padding: 14px 16px;
+      margin: 18px 0;
+    }
+
+    .warning {
+      border-left-color: var(--warn);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 16px 0 24px;
+      font-size: 0.96rem;
+    }
+
+    th, td {
+      border: 1px solid var(--line);
+      padding: 10px 12px;
+      vertical-align: top;
+      text-align: left;
+    }
+
+    th { background: var(--code-bg); }
+
+    .quiz {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 18px;
+      margin-top: 28px;
+    }
+
+    .answer {
+      display: none;
+      margin: 8px 0 18px;
+      color: var(--muted);
+    }
+
+    .answer.visible { display: block; }
+
+    button.reveal {
+      appearance: none;
+      border: 1px solid var(--accent-strong);
+      color: var(--accent-strong);
+      background: transparent;
+      border-radius: 4px;
+      padding: 7px 10px;
+      font: inherit;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>genai-lab Study Notes</h1>
+    <p class="meta">Cumulative HTML study document for the Generative AI Engineering Learning Lab.</p>
+  </header>
+
+  <section id="module-0">
+    <h2>Module 0 - Design & Architecture</h2>
+    <p class="meta">Status: design complete, awaiting approval before Module 1 implementation.</p>
+
+    <div class="callout">
+      <strong>Domain choice:</strong> Research Assistant for technical papers and engineering notes.
+      This domain gives RAG a natural job, makes citations non-negotiable, creates meaningful tool
+      boundaries, and supports multi-agent workflows without inventing artificial complexity.
+    </div>
+
+    <h3>What We Are Building</h3>
+    <p>
+      The lab is a compact but production-shaped research assistant that ingests papers, RFC-style
+      notes, and internal design documents; answers grounded questions; compares sources; extracts
+      claims; escalates uncertain answers; and uses an external MCP server for domain-specific tools.
+      The point is not to build the largest possible demo. The point is to make the important seams
+      visible: ingestion, retrieval, prompting, agent tool use, graph orchestration, memory,
+      observability, and protocol-based integration.
+    </p>
+
+    <p>
+      Research Assistant beats the other candidate domains for this lab because it exercises every
+      module in a way that feels earned. A Developer Knowledge Base is also strong, but code-aware
+      ingestion can pull the project toward static analysis and repository indexing before the core
+      GenAI patterns are clear. A Support Agent is realistic, but it can hide hard retrieval questions
+      behind simple FAQ behavior. Research work forces citation quality, semantic comparison, source
+      metadata, ambiguity handling, and synthesis across conflicting passages.
+    </p>
+
+    <h3>Architecture Overview</h3>
+    <pre><code>                             +-------------------------------+
+                             |        User / API / CLI       |
+                             +---------------+---------------+
+                                             |
+                                             v
+                             +-------------------------------+
+                             | Python App Boundary           |
+                             | FastAPI/CLI later, same core  |
+                             +---------------+---------------+
+                                             |
+                 +---------------------------+---------------------------+
+                 |                           |                           |
+                 v                           v                           v
+      +---------------------+      +---------------------+      +---------------------+
+      | LangGraph Workflow  |      | LangChain Agents    |      | LlamaIndex RAG     |
+      | state, routing, HITL|      | tools, ReAct, retry |      | query engines      |
+      +----------+----------+      +----------+----------+      +----------+----------+
+                 |                            |                           |
+                 |                            |                           |
+                 v                            v                           v
+      +---------------------+      +---------------------+      +---------------------+
+      | Checkpoints/Memory  |      | Tool Registry       |      | Retriever Layer    |
+      | Postgres + PGVector |      | local + MCP tools   |      | sim/MMR/hybrid     |
+      +----------+----------+      +----------+----------+      +----------+----------+
+                 |                            |                           |
+                 |                            v                           |
+                 |              +---------------------------+             |
+                 |              | Spring Boot MCP Server    |             |
+                 |              | Spring AI tool schemas    |             |
+                 |              +-------------+-------------+             |
+                 |                            |                           |
+                 |                            v                           |
+                 |              +---------------------------+             |
+                 |              | Domain Tool Implementations|            |
+                 |              | claim check, venue lookup, |            |
+                 |              | reading-list planning      |            |
+                 |              +---------------------------+             |
+                 |                                                        |
+                 v                                                        v
+      +---------------------+                                  +---------------------+
+      | App Postgres        |                                  | Vector Store Port   |
+      | runs, docs, evals   |                                  | PGVector/Pinecone   |
+      +---------------------+                                  +----------+----------+
+                                                                            |
+                                                                            v
+                                                               +---------------------+
+                                                               | Embeddings Port     |
+                                                               | Ollama/OpenAI       |
+                                                               +---------------------+
+
+      Model calls flow through a provider-neutral model factory:
+
+      Ollama local chat/embed  <---- config profile ---->  OpenAI / Gemini / Claude
+                 ^                                           ^
+                 |                                           |
+          cheap/dev/private                           prod/eval/provider tests
+</code></pre>
+
+    <h3>Execution Model</h3>
+    <p>
+      LlamaIndex owns the document lifecycle: load documents, parse them into nodes, enrich metadata,
+      embed nodes, cache transformations, and write vector records. Its ingestion pipeline is built
+      around transformations over nodes, which is exactly the level of abstraction needed for chunking,
+      metadata normalization, and document refresh semantics. LangChain alone can load documents and
+      call retrievers, but LlamaIndex has a more ingestion-native execution model and stronger query
+      engine primitives for RAG experiments.
+    </p>
+
+    <p>
+      LangChain owns the model and tool-call boundary. It gives us common chat model interfaces across
+      providers, structured tool schemas, callbacks, retries, and agent patterns. The application code
+      should depend on stable ports in <code>src/genai_lab/ports/models.py</code> and
+      <code>src/genai_lab/ports/vector_store.py</code>, then adapters can translate those ports into
+      concrete LangChain and LlamaIndex objects.
+    </p>
+
+    <p>
+      LangGraph owns long-running control flow. A simple agent loop is fine until the assistant must
+      branch, pause for human review, retry a retrieval strategy, run multiple evaluators, checkpoint
+      state, or prevent accidental infinite loops. Graph nodes make state transitions explicit. Edges
+      make routing decisions inspectable. Checkpoints make failures recoverable.
+    </p>
+
+    <h3>Module Breakdown and Ordering</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Module</th>
+          <th>Why It Comes Here</th>
+          <th>Production Lesson</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>0. Design & Architecture</td>
+          <td>Freezes boundaries before framework code creates accidental coupling.</td>
+          <td>Provider and storage choices should be dependencies, not architecture.</td>
+        </tr>
+        <tr>
+          <td>1. Document Ingestion</td>
+          <td>Retrieval quality is mostly decided before the first query is asked.</td>
+          <td>Chunking, metadata, refresh behavior, and embedding drift are core system design.</td>
+        </tr>
+        <tr>
+          <td>2. RAG Query Engine</td>
+          <td>Once documents are indexed, retrieval strategies can be compared honestly.</td>
+          <td>Better prompts rarely compensate for bad recall or untrusted context.</td>
+        </tr>
+        <tr>
+          <td>3. Tool-Using Agent</td>
+          <td>Tools make sense only after the assistant has grounded knowledge to reason over.</td>
+          <td>Tool contracts, error handling, and budget control determine agent reliability.</td>
+        </tr>
+        <tr>
+          <td>4. Stateful Multi-Agent Workflow</td>
+          <td>Graph orchestration is easier to understand after one agent exists.</td>
+          <td>State, routing, cycles, and interrupts are operational concerns, not decoration.</td>
+        </tr>
+        <tr>
+          <td>5. Memory & Persistence</td>
+          <td>Memory is added after the base workflow can distinguish task state from user memory.</td>
+          <td>Most memory bugs are scope bugs: storing too much, retrieving too broadly, or forgetting provenance.</td>
+        </tr>
+        <tr>
+          <td>6. MCP Integration</td>
+          <td>External tools are most useful once local tool use and workflow routing are already clear.</td>
+          <td>MCP is a contract boundary. Timeout, schema, auth, and error semantics matter.</td>
+        </tr>
+        <tr>
+          <td>7. Observability & Evaluation</td>
+          <td>Evaluation lands last so it can trace complete workflows, not isolated functions.</td>
+          <td>Agent traces need loop-aware logging, prompt versions, retrieval metrics, and cost attribution.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>Major Technology Choices</h3>
+
+    <h4>Python Project Manager: uv</h4>
+    <p>
+      This project uses <code>uv</code> because it is fast, lockfile-oriented, and well suited to a
+      learning lab that will add dependencies module by module. Poetry is mature and perfectly viable,
+      but <code>uv</code> gives faster environment creation and simpler command ergonomics while still
+      keeping dependency changes explicit in <code>pyproject.toml</code> and a future lockfile.
+    </p>
+
+    <h4>LlamaIndex for Ingestion and Query Engines</h4>
+    <p>
+      LlamaIndex is the right owner for ingestion because its pipeline model treats parsing,
+      transformations, embeddings, and vector insertion as first-class steps. That matters when we
+      later discuss chunk-size trade-offs, overlap, metadata enrichment, incremental refresh, and
+      embedding drift. LangChain can participate at query and agent boundaries, but forcing LangChain
+      to own ingestion would make us rebuild pipeline behavior that LlamaIndex already models well.
+    </p>
+
+    <h4>LangChain for Models, Tools, and Agent Primitives</h4>
+    <p>
+      LangChain provides the provider abstraction layer for chat models, common tool binding patterns,
+      structured output, callbacks, and retry wrappers. The key design rule is that provider-specific
+      classes stay in adapter modules. Agent logic receives a chat model, retriever, and tool list; it
+      does not know whether the active backend is Ollama, OpenAI, Gemini, or Claude.
+    </p>
+
+    <h4>LangGraph for Orchestration</h4>
+    <p>
+      LangGraph is justified once the workflow has state, conditional routing, cycles, and human review.
+      In this lab, the graph will eventually coordinate planner, retriever, answerer, verifier, and
+      escalation nodes. A hand-written loop can be shorter, but it tends to bury control flow in mutable
+      local variables and exception branches. LangGraph makes that control flow inspectable and testable.
+    </p>
+
+    <h4>PGVector in Dev, Pinecone in Prod</h4>
+    <p>
+      PGVector is the right development default because it colocates vector search with the application
+      database, works cleanly in Docker Compose, and keeps local experimentation cheap. Pinecone is the
+      production target because managed serverless vector infrastructure removes operational work when
+      indexes grow, latency SLOs matter, and teams need managed scaling. The application uses a vector
+      store port so this is a deployment decision. It should not leak into retrieval or agent code.
+    </p>
+
+    <h4>Spring Boot MCP Sub-Project</h4>
+    <p>
+      The MCP server is intentionally Java/Spring Boot because it simulates a realistic enterprise
+      boundary: the Python agent layer consumes tools owned by another service and language runtime.
+      Spring AI's MCP server support gives a typed way to expose tools and schemas while keeping the
+      implementation behind protocol boundaries. The planned domain tools are claim normalization,
+      citation/venue metadata lookup, and reading-list planning.
+    </p>
+
+    <h3>Docker Compose Topology</h3>
+    <p>
+      <code>docker-compose.yml</code> defines four service roles: Python app, Postgres with PGVector,
+      Ollama, and Spring Boot MCP server. Postgres and Ollama are the default local infrastructure.
+      The app and MCP server are profile-gated until their Dockerfiles are introduced in later modules.
+      This keeps Module 0 honest: the topology is documented without pretending the whole system is
+      runnable before the code exists.
+    </p>
+
+    <pre><code>Local dev:
+  docker compose up postgres ollama
+
+Later app profile:
+  docker compose --profile app --profile mcp up --build
+
+Prod-like profile:
+  GENAI_LAB_LLM_PROVIDER=openai|gemini|anthropic
+  GENAI_LAB_VECTOR_STORE_PROVIDER=pinecone
+  app container skips Ollama and uses managed vector storage
+</code></pre>
+
+    <h3>LLM and Vector Store Abstraction Strategy</h3>
+    <p>
+      The app has three levels of dependency:
+    </p>
+    <ol>
+      <li><strong>Domain services</strong> depend on ports and framework base interfaces.</li>
+      <li><strong>Adapters</strong> translate settings into LangChain, LlamaIndex, PGVector, Pinecone, and MCP clients.</li>
+      <li><strong>Settings</strong> choose providers, models, credentials, endpoints, and profile behavior.</li>
+    </ol>
+
+    <p>
+      The current skeleton establishes that boundary in
+      <code>src/genai_lab/config/settings.py</code>,
+      <code>src/genai_lab/ports/models.py</code>, and
+      <code>src/genai_lab/ports/vector_store.py</code>. Later modules will add concrete adapters such
+      as <code>OllamaModelFactory</code>, <code>OpenAIModelFactory</code>,
+      <code>PgVectorStoreFactory</code>, and <code>PineconeStoreFactory</code>. The agent layer will
+      receive model and tool instances from composition code instead of constructing them directly.
+    </p>
+
+    <div class="warning callout">
+      <strong>Production warning:</strong> provider abstraction is never perfect. Tool calling,
+      streaming, JSON mode, safety filters, rate limits, context windows, and token accounting vary by
+      provider. The interface should hide construction details, not pretend all models behave the same.
+      Provider capability checks belong near adapter creation and test fixtures.
+    </div>
+
+    <h3>Configuration and Secrets</h3>
+    <p>
+      Configuration uses Pydantic Settings with an application prefix,
+      <code>GENAI_LAB_</code>, and nested environment support. The default settings load
+      <code>.env</code> and <code>.env.dev</code>; secrets are represented as <code>SecretStr</code>
+      so accidental logging is less likely. <code>.env.example</code> documents expected keys while
+      local secret files remain ignored by Git.
+    </p>
+
+    <p>
+      The profile model is deliberately boring: <code>dev</code> defaults to Ollama and PGVector,
+      <code>test</code> will use deterministic or mocked adapters where possible, and
+      <code>prod</code> can select OpenAI, Gemini, Claude, and Pinecone through environment variables.
+      The app should fail fast at startup if a selected provider is missing required credentials.
+    </p>
+
+    <h3>Best Practices Already Applied</h3>
+    <ul>
+      <li>Dependency choices are recorded before implementation pressure makes them implicit.</li>
+      <li>Provider-neutral ports keep agent and workflow logic away from vendor constructors.</li>
+      <li>Settings are validated at startup rather than pulled ad hoc from <code>os.environ</code>.</li>
+      <li>Secrets are excluded from source control and represented with secret-aware types.</li>
+      <li>Compose separates always-needed infrastructure from future app/MCP build profiles.</li>
+      <li>The MCP server is modeled as an external service, not an in-process convenience function.</li>
+    </ul>
+
+    <h3>Gotchas, Failure Modes, and Anti-Patterns</h3>
+    <ul>
+      <li><strong>Leaky provider abstraction:</strong> if graph nodes call <code>ChatOpenAI</code> directly, provider switching is fake.</li>
+      <li><strong>Embedding drift:</strong> changing embedding models requires reindexing or versioned indexes; mixed embeddings poison retrieval.</li>
+      <li><strong>Metadata afterthoughts:</strong> citations, filtering, deletion, and evaluation all depend on metadata captured during ingestion.</li>
+      <li><strong>Agent loop opacity:</strong> a single while-loop hides routing, retries, and stopping conditions from tests and traces.</li>
+      <li><strong>MCP without contracts:</strong> tool schemas, timeouts, and error shapes must be treated as API design, not glue code.</li>
+      <li><strong>Local/prod mismatch:</strong> Ollama and hosted frontier models differ in context limits, tool reliability, latency, and instruction following.</li>
+    </ul>
+
+    <h3>Source Notes</h3>
+    <p>
+      The design aligns with current official documentation for
+      <a href="https://docs.llamaindex.ai/en/stable/module_guides/loading/ingestion_pipeline/">LlamaIndex ingestion pipelines</a>,
+      <a href="https://docs.langchain.com/oss/python/concepts/providers-and-models">LangChain provider/model abstractions</a>,
+      <a href="https://docs.spring.io/spring-ai-mcp/reference/overview.html">Spring AI MCP</a>,
+      <a href="https://github.com/pgvector/pgvector">PGVector</a>,
+      <a href="https://docs.pinecone.io/reference/architecture/serverless-architecture">Pinecone serverless architecture</a>,
+      and <a href="https://docs.pydantic.dev/latest/api/pydantic_settings/">Pydantic Settings</a>.
+    </p>
+
+    <div class="quiz">
+      <h3>Quiz</h3>
+
+      <h4>1. Why does LlamaIndex own ingestion instead of LangChain?</h4>
+      <p class="answer">Because ingestion is a pipeline of loading, node parsing, transformation, metadata enrichment, embedding, caching, and vector insertion. LlamaIndex models those steps directly, while LangChain is better used here for model/tool abstractions and agent behavior.</p>
+
+      <h4>2. What is the main architectural reason to introduce LangGraph?</h4>
+      <p class="answer">Stateful orchestration. Once the system needs conditional routing, cycles, retries, checkpoints, and human interrupt points, graph structure makes control flow explicit and testable.</p>
+
+      <h4>3. Why is PGVector a better dev default than Pinecone?</h4>
+      <p class="answer">It runs locally inside the same Docker Compose stack as Postgres, keeps experiments cheap, and colocates relational and vector data. Pinecone becomes attractive when production scale, managed operations, and latency SLOs matter.</p>
+
+      <h4>4. What is the danger of switching embedding models without reindexing?</h4>
+      <p class="answer">The vector space changes. Queries embedded by the new model are compared against chunks embedded by the old model, which can silently degrade retrieval quality.</p>
+
+      <h4>5. What should the provider abstraction hide, and what should it not hide?</h4>
+      <p class="answer">It should hide construction, credentials, endpoint selection, and common invocation setup. It should not hide real capability differences such as context windows, tool calling behavior, streaming support, JSON reliability, latency, or token pricing.</p>
+
+      <button class="reveal" type="button" data-toggle-answers>Reveal Answers</button>
+    </div>
+  </section>
+
+  <section id="module-1">
+    <h2>Module 1 - Document Ingestion Pipeline</h2>
+    <p class="meta">Status: implemented and verified with a LlamaIndex dry run.</p>
+
+    <div class="callout">
+      <strong>What changed:</strong> the project now has a real LlamaIndex ingestion pipeline for
+      research documents, sample source material, metadata enrichment, chunking policy validation,
+      optional embeddings, PGVector indexing hooks, persistent ingestion caching, and a CLI entry
+      point.
+    </div>
+
+    <h3>What Was Built</h3>
+    <p>
+      Module 1 adds the ingestion layer under <code>src/genai_lab/ingestion</code>. The CLI in
+      <code>src/genai_lab/ingestion/cli.py</code> calls <code>run_ingestion</code>, which loads files
+      from <code>data/research_notes</code>, turns them into LlamaIndex documents, parses them into
+      nodes, and either stops after parsing for <code>--dry-run</code> or continues through embedding
+      and PGVector insertion for a full indexing run.
+    </p>
+
+    <p>
+      The sample corpus is intentionally small: <code>rag_failure_modes.md</code> and
+      <code>agentic_workflows.md</code>. They are not toy lorem ipsum. They contain the concepts the
+      later modules will retrieve against: RAG failure modes, chunking trade-offs, embedding drift,
+      graph workflow design, human review, and tool schema quality.
+    </p>
+
+    <h3>Execution Model Under the Hood</h3>
+    <p>
+      LlamaIndex ingestion has three conceptual stages: load, transform, and store. Loading uses
+      <code>SimpleDirectoryReader</code> in <code>load_documents</code>. That reader walks the source
+      directory, applies extension filters, creates <code>Document</code> objects, and attaches the
+      metadata returned by our <code>file_metadata</code> callback. That callback is important: it is
+      the earliest reliable moment to attach source identity before text is split into chunks.
+    </p>
+
+    <p>
+      Transformation happens inside <code>IngestionPipeline</code>. In dry-run mode, the pipeline has
+      one transformation: <code>SentenceSplitter</code>. In full indexing mode, the pipeline appends an
+      embedding transformation created by <code>create_embedding_model</code>. That ordering matters:
+      embedding must happen after node parsing, because the vector store should receive vectors for
+      chunks, not whole unbounded documents.
+    </p>
+
+    <p>
+      Storage is optional at runtime. When <code>--dry-run</code> is used, the pipeline returns parsed
+      nodes and writes only the ingestion cache. In full mode, <code>create_pgvector_store</code>
+      parses the configured Postgres DSN and creates a LlamaIndex <code>PGVectorStore</code>. The
+      vector store is attached directly to <code>IngestionPipeline</code>, so <code>pipeline.run</code>
+      both computes embeddings and writes vector records.
+    </p>
+
+    <pre><code>CLI
+  -> Settings
+  -> ChunkingProfile.validate()
+  -> SimpleDirectoryReader(file_metadata=build_source_metadata)
+  -> IngestionPipeline(
+       SentenceSplitter,
+       [OllamaEmbedding or OpenAIEmbedding],
+       [PGVectorStore],
+       IngestionCache
+     )
+  -> nodes returned, cache persisted, vectors written in full mode
+</code></pre>
+
+    <h3>Design Decisions</h3>
+
+    <h4>Dry Run Is a First-Class Path</h4>
+    <p>
+      The CLI supports <code>--dry-run</code> because production ingestion needs a way to inspect
+      parsing and metadata before spending money or mutating an index. This also keeps local
+      verification fast: Module 1 was verified by loading 2 documents and producing 2 nodes without
+      requiring Ollama or Postgres to be running.
+    </p>
+
+    <h4>Chunking Policy Is Explicit</h4>
+    <p>
+      <code>ChunkingProfile</code> in <code>chunking.py</code> validates chunk size and overlap before
+      the LlamaIndex parser is constructed. The default is 512 tokens with 80 tokens of overlap. That
+      is a pragmatic starting point for research prose: large enough to preserve a local argument, but
+      small enough to avoid stuffing the answer context with unrelated paragraphs.
+    </p>
+
+    <h4>Metadata Is Attached Before Chunking</h4>
+    <p>
+      <code>build_source_metadata</code> records source path, source file name, source type, corpus,
+      and ingestion timestamp. Later RAG modules will need this metadata for citations, filters,
+      deletion/reindexing, evaluation slices, and debugging bad answers. Metadata added after chunking
+      is usually less reliable because the relationship between chunk and source has already become
+      indirect.
+    </p>
+
+    <h4>Embedding Provider Is Config-Selected</h4>
+    <p>
+      Module 1 supports Ollama and OpenAI embeddings. The default remains local Ollama with
+      <code>nomic-embed-text</code>. OpenAI is wired because production and evaluation profiles often
+      use hosted embeddings, but provider choice stays in <code>Settings</code>, not in ingestion
+      business logic.
+    </p>
+
+    <h4>PGVector Is the First Concrete Store</h4>
+    <p>
+      The ingestion module writes to PGVector for the development profile because it is local,
+      reproducible, and colocated with the application database. Docker Compose now mounts
+      <code>docker/postgres/init/001_enable_pgvector.sql</code> so fresh Postgres volumes enable the
+      <code>vector</code> extension at initialization.
+    </p>
+
+    <h3>Code References</h3>
+    <ul>
+      <li><code>src/genai_lab/ingestion/cli.py</code>: CLI arguments, settings composition, dry-run flag.</li>
+      <li><code>src/genai_lab/ingestion/pipeline.py</code>: LlamaIndex reader, pipeline, embedding, cache, and PGVector wiring.</li>
+      <li><code>src/genai_lab/ingestion/chunking.py</code>: chunk size and overlap policy validation.</li>
+      <li><code>src/genai_lab/ingestion/metadata.py</code>: source metadata normalization.</li>
+      <li><code>src/genai_lab/config/settings.py</code>: ingestion, embedding, and vector-store settings.</li>
+      <li><code>tests/test_ingestion_policy.py</code>: tests for chunking and metadata behavior.</li>
+    </ul>
+
+    <h3>Best Practices Applied</h3>
+    <ul>
+      <li>Run parsing separately from indexing so bad chunks can be caught before expensive writes.</li>
+      <li>Attach source metadata at reader time, before documents are split into nodes.</li>
+      <li>Validate chunking settings explicitly instead of letting bad parser parameters fail deep inside the framework.</li>
+      <li>Persist an ingestion cache so repeated runs do not recompute stable transformations unnecessarily.</li>
+      <li>Keep embedding provider selection in configuration and factory functions.</li>
+      <li>Initialize PGVector through Compose so local setup is reproducible.</li>
+    </ul>
+
+    <h3>Gotchas and Failure Modes</h3>
+    <ul>
+      <li><strong>Embedding drift:</strong> changing from <code>nomic-embed-text</code> to another embedding model changes the vector space. Reindex or partition by embedding version.</li>
+      <li><strong>Dimension mismatch:</strong> PGVector tables are created with a fixed embedding dimension. <code>GENAI_LAB_EMBEDDING_DIMENSION</code> must match the active embedding model.</li>
+      <li><strong>Overlapping too much:</strong> high overlap improves continuity but inflates storage, embedding cost, and duplicate retrieval.</li>
+      <li><strong>Chunking too small:</strong> tiny chunks retrieve precise snippets but often lose definitions, caveats, and experimental setup.</li>
+      <li><strong>Silent metadata loss:</strong> citations and deletion workflows become painful if source path and corpus metadata are not attached before parsing.</li>
+      <li><strong>Assuming local equals prod:</strong> Ollama embeddings are excellent for local development, but production quality and latency should be evaluated against the hosted profile before deployment decisions.</li>
+    </ul>
+
+    <h3>How to Run</h3>
+    <pre><code># Fast verification: no embeddings, no Postgres writes
+.venv/bin/python -m genai_lab.ingestion.cli --dry-run
+
+# Full local indexing after services and model are available
+docker compose up postgres ollama
+ollama pull nomic-embed-text
+.venv/bin/python -m genai_lab.ingestion.cli
+</code></pre>
+
+    <h3>Verification</h3>
+    <p>
+      Module 1 was verified with Python syntax compilation, unit tests for ingestion policy, Docker
+      Compose config validation, and a real LlamaIndex dry run. The dry run loaded 2 documents and
+      produced 2 nodes. Full PGVector indexing is wired, but it requires the local Postgres and Ollama
+      services plus the configured embedding model.
+    </p>
+
+    <h3>Source Notes</h3>
+    <p>
+      The implementation follows current official LlamaIndex documentation for
+      <a href="https://docs.llamaindex.ai/en/stable/module_guides/loading/simpledirectoryreader/">SimpleDirectoryReader</a>,
+      <a href="https://docs.llamaindex.ai/en/stable/module_guides/loading/ingestion_pipeline/">IngestionPipeline</a>,
+      <a href="https://docs.llamaindex.ai/en/stable/module_guides/models/embeddings/">embeddings</a>,
+      <a href="https://docs.llamaindex.ai/en/v0.10.33/examples/embeddings/ollama_embedding/">OllamaEmbedding</a>,
+      and <a href="https://docs.llamaindex.ai/en/v0.10.22/api_reference/storage/vector_store/postgres/">PGVectorStore</a>.
+    </p>
+
+    <div class="quiz">
+      <h3>Quiz</h3>
+
+      <h4>1. Why should metadata be attached before chunking?</h4>
+      <p class="answer">Because every resulting node inherits source identity. That makes citation, filtering, deletion, and debugging possible without reconstructing provenance later.</p>
+
+      <h4>2. Why is dry-run ingestion useful in production?</h4>
+      <p class="answer">It lets engineers inspect loaded documents, chunk counts, and metadata before spending embedding budget or mutating the vector index.</p>
+
+      <h4>3. What operational problem does embedding drift create?</h4>
+      <p class="answer">Old chunks and new queries may live in incompatible vector spaces. The system can still return results, but relevance silently degrades.</p>
+
+      <h4>4. What trade-off does chunk overlap create?</h4>
+      <p class="answer">Overlap preserves context across chunk boundaries, but too much overlap increases duplicate content, storage volume, embedding cost, and repeated retrieval.</p>
+
+      <h4>5. Why must PGVector know the embedding dimension?</h4>
+      <p class="answer">The vector column has a fixed dimensionality. If the embedding model outputs vectors of a different size, inserts or similarity search will fail.</p>
+
+      <button class="reveal" type="button" data-toggle-answers>Reveal Answers</button>
+    </div>
+  </section>
+</main>
+
+<script>
+  document.querySelectorAll("[data-toggle-answers]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const quiz = button.closest(".quiz");
+      const answers = quiz.querySelectorAll(".answer");
+      const shouldShow = button.textContent === "Reveal Answers";
+      answers.forEach((answer) => answer.classList.toggle("visible", shouldShow));
+      button.textContent = shouldShow ? "Hide Answers" : "Reveal Answers";
+    });
+  });
+</script>
+</body>
+</html>
