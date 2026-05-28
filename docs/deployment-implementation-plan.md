@@ -103,11 +103,3 @@ are pure functions with no DB/state — trivially horizontally scalable.
 Phase 0 → **Phase 1 (memory externalization — gating)** → Phase 2 (API) → Phase 4 (managed LLM/vectors) → Phase 3 (ingestion job) → Phase 5 (MCP replicas) → Phase 6 (ops).
 
 ---
-
-## Relationship to the sibling project (complaint-lab)
-
-Same scaffolding (ports/adapters, pydantic `Settings`, deterministic dev path, Spring MCP),
-but a different workload: **complaint-lab is event-driven (queue + workers)**; this one is
-**request/response + batch ingestion**. complaint-lab's hard part was an idempotent stateful
-case service; here the MCP server is trivially stateless, but **in-process per-user memory is
-the thing that must be fixed first**.
