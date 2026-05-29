@@ -194,6 +194,7 @@
       <li><a href="#module-6">Module 6 - MCP</a></li>
       <li><a href="#module-7">Module 7 - Observability</a></li>
       <li><a href="#module-8">Module 8 - Cloud Deployment</a></li>
+      <li><a href="#module-9">Module 9 - Web Frontend</a></li>
     </ul>
   </nav>
 
@@ -1789,7 +1790,7 @@ docker compose --profile app --profile mcp config
 
   <section id="module-8">
     <h2>Module 8 - Cloud Deployment at Scale</h2>
-    <p class="meta">Status: architecture defined. Full phase checklist in <code>docs/deployment-implementation-plan.md</code>.</p>
+    <p class="meta">Status: Phase 1 (memory externalization) and Phase 2 (HTTP API) complete. Full phase checklist in <code>docs/deployment-implementation-plan.md</code>.</p>
 
     <div class="callout">
       <strong>What this adds:</strong> the lab is deployable beyond a single laptop. The local
@@ -1864,14 +1865,25 @@ docker compose --profile app --profile mcp config
       schema and HNSW index are already in place for that upgrade.
     </p>
 
-    <h4>Phase 2 — HTTP API for the Query Tier</h4>
+    <h4>Phase 2 — HTTP API for the Query Tier ✓ implemented</h4>
     <p>
-      Add a FastAPI/uvicorn application exposing the RAG engine, agent, and LangGraph workflow as
-      HTTP endpoints. This becomes the query-tier container entrypoint — currently everything is
-      CLI-only. Keep request handling stateless; all durable state lives in the memory store and
-      vector store. Add <code>/healthz</code> and <code>/readyz</code> probes for load-balancer
-      health checks. Pass <code>user_id</code> per request so <code>MemoryNamespace</code>
-      scoping and per-user memory retrieval work correctly.
+      <strong>Done.</strong> <code>src/genai_lab/api/</code> is a new package exposing all domain
+      modules as a FastAPI application on port 8000. Seven routes are registered under
+      <code>/api</code>: <code>GET /health</code>, <code>POST /rag</code>,
+      <code>POST /agent</code>, <code>POST /workflow/start</code>,
+      <code>POST /workflow/resume</code>, <code>POST /memory</code>,
+      <code>POST /mcp/{tool}</code>, and <code>POST /evaluate</code>. CORS is configured for
+      <code>http://localhost:5173</code> (the Vite dev server).
+    </p>
+    <p>
+      The app is request-stateless: the workflow route holds a single compiled LangGraph graph as a
+      module-level singleton and isolates state per <code>thread_id</code> via the
+      <code>InMemorySaver</code> checkpointer. Human-review interrupts are resumed with
+      <code>Command(resume=decision)</code> on the <code>/workflow/resume</code> route.
+      Domain objects (dataclasses) are serialized with <code>dataclasses.asdict()</code>;
+      Pydantic models use <code>.model_dump()</code>. The entry point
+      <code>genai-lab-api</code> in <code>pyproject.toml</code> runs uvicorn with
+      <code>--reload</code> for development.
     </p>
 
     <h4>Phase 3 — Split Ingestion into a Job</h4>
@@ -1963,10 +1975,10 @@ docker compose --profile app --profile mcp config
 
     <h3>Suggested Execution Order</h3>
     <p>
-      <strong>Phase 1 (memory externalization) is complete.</strong> Remaining order:
-      Phase 0 (IaC/CI) → Phase 2 (HTTP API) → Phase 4 (managed LLM/vectors, including wiring
-      vector search into <code>PgLongTermMemoryStore</code>) → Phase 3 (ingestion job) →
-      Phase 5 (MCP replicas) → Phase 6 (ops).
+      <strong>Phase 1 (memory) and Phase 2 (HTTP API) are complete.</strong> Remaining order:
+      Phase 0 (IaC/CI) → Phase 4 (managed LLM/vectors, including wiring vector search into
+      <code>PgLongTermMemoryStore</code>) → Phase 3 (ingestion job) → Phase 5 (MCP replicas) →
+      Phase 6 (ops). The web frontend (Module 9) is also operational and connects to the Phase 2 API.
     </p>
 
     <h3>Explicit Non-Goals and Pitfalls</h3>
@@ -1980,6 +1992,9 @@ docker compose --profile app --profile mcp config
     <h3>Code References</h3>
     <ul>
       <li><code>docs/deployment-implementation-plan.md</code>: full phase checklist and cloud service mapping.</li>
+      <li><code>src/genai_lab/api/app.py</code>: FastAPI application, CORS, router mounts, uvicorn entry point — Phase 2.</li>
+      <li><code>src/genai_lab/api/schemas.py</code>: Pydantic request models for all six domains.</li>
+      <li><code>src/genai_lab/api/routes/</code>: one file per domain (<code>rag</code>, <code>agent</code>, <code>workflow</code>, <code>memory</code>, <code>mcp</code>, <code>evaluate</code>, <code>health</code>).</li>
       <li><code>src/genai_lab/config/settings.py</code>: <code>RuntimeProfile</code>, <code>LlmProvider</code>, <code>VectorStoreProvider</code> — the configuration switchboards for cloud profiles.</li>
       <li><code>src/genai_lab/memory/store.py</code>: <code>BaseMemoryStore</code> ABC; <code>LongTermMemoryStore</code> (dev); <code>PgLongTermMemoryStore</code> (prod) — Phase 1 complete.</li>
       <li><code>src/genai_lab/memory/pgvector_design.py</code>: <code>memory_table_sql(embedding_dimension)</code> — production DDL used by <code>PgLongTermMemoryStore._ensure_table()</code>.</li>
@@ -2005,6 +2020,233 @@ docker compose --profile app --profile mcp config
 
       <h4>5. What keeps cloud deployment a configuration change rather than a code rewrite?</h4>
       <p class="answer">Provider-neutral ports and the Settings abstraction. LlmProvider, VectorStoreProvider, and adapter factories isolate cloud-specific construction so business logic does not need to change when switching between Ollama/PGVector and Bedrock/Pinecone.</p>
+
+      <button class="reveal" type="button" data-toggle-answers>Reveal Answers</button>
+    </div>
+  </section>
+
+  <section id="module-9">
+    <h2>Module 9 - Web Frontend</h2>
+    <p class="meta">Status: implemented — React 19 + Vite 6 + TypeScript + Tailwind v4, six pages, production build verified.</p>
+
+    <div class="callout">
+      <strong>What this adds:</strong> a browser-based dashboard that connects to the Phase 2
+      FastAPI backend. Six pages cover every domain module: RAG query, tool-using agent,
+      multi-agent workflow (with human-review panel), memory, MCP tools, and RAG evaluation.
+      The frontend lives in a separate repository (<code>agentic-ai-system-rag-mcp-fe</code>)
+      and communicates with the backend through a Vite dev-server proxy — no CORS setup needed
+      in development.
+    </div>
+
+    <h3>Stack</h3>
+    <table>
+      <thead>
+        <tr><th>Concern</th><th>Choice</th><th>Why</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Build tool</td>
+          <td>Vite 6</td>
+          <td>Sub-second HMR, first-class TypeScript, proxy support out of the box.</td>
+        </tr>
+        <tr>
+          <td>UI library</td>
+          <td>React 19</td>
+          <td>Familiar, strong ecosystem, works well for data-heavy panels.</td>
+        </tr>
+        <tr>
+          <td>Type safety</td>
+          <td>TypeScript (strict)</td>
+          <td>API response shapes are typed in <code>src/types.ts</code>; catches mismatches at build time.</td>
+        </tr>
+        <tr>
+          <td>Styling</td>
+          <td>Tailwind v4 via <code>@tailwindcss/vite</code></td>
+          <td>v4's Vite plugin replaces the old PostCSS pipeline. No <code>tailwind.config.js</code> needed — a single <code>@import "tailwindcss"</code> in <code>index.css</code> is enough.</td>
+        </tr>
+        <tr>
+          <td>Routing</td>
+          <td>None (<code>useState</code>)</td>
+          <td>Six pages, no deep links required. A string <code>currentPage</code> state in <code>App.tsx</code> is sufficient and avoids a router dependency.</td>
+        </tr>
+        <tr>
+          <td>HTTP</td>
+          <td>Native <code>fetch</code></td>
+          <td>No extra dependency. Typed wrappers in <code>src/api/</code> handle serialization and error surfacing.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>Architecture</h3>
+    <pre><code>Browser
+  → Vite dev server (:5173)
+      → proxy /api/* → FastAPI (:8000)
+            → RAG engine / Agent / LangGraph graph / Memory / MCP / Evaluation
+</code></pre>
+    <p>
+      The Vite proxy rewrites <code>/api/*</code> requests to <code>http://localhost:8000</code>.
+      This means the frontend makes relative URLs (e.g. <code>fetch('/api/rag')</code>) and never
+      touches CORS in development. In production, the same proxy pattern is replaced by a real
+      reverse proxy (Nginx, ALB, Cloud Run ingress) in front of both services.
+    </p>
+
+    <h3>Project Structure</h3>
+    <pre><code>src/
+  api/           # typed fetch wrappers — one file per domain
+    rag.ts       agent.ts   workflow.ts   memory.ts   mcp.ts   evaluate.ts
+  components/    # shared UI primitives
+    Badge.tsx    Spinner.tsx   ErrorBanner.tsx
+    JsonPanel.tsx   CitationList.tsx   AuditLog.tsx
+  pages/         # one component per module
+    RagPage.tsx   AgentPage.tsx   WorkflowPage.tsx
+    MemoryPage.tsx   McpPage.tsx   EvaluatePage.tsx
+  App.tsx        # fixed sidebar layout + page switcher
+  types.ts       # TypeScript interfaces mirroring FastAPI response shapes
+  main.tsx       # React root mount
+</code></pre>
+
+    <h3>Page Designs</h3>
+
+    <h4>RAG Page</h4>
+    <p>
+      Textarea (question), strategy select (similarity / MMR / hybrid), transform select
+      (none / HyDE / step-back), vector-store checkbox, Submit. Response card shows the answer
+      text followed by a <code>CitationList</code> — source name, score pill, snippet, and any
+      safety flags. Retrieval metadata (strategy, transform, expanded queries) appears as a small
+      footer line.
+    </p>
+
+    <h4>Agent Page</h4>
+    <p>
+      Textarea (task), Submit. Result shows a status <code>Badge</code> (green=answered,
+      yellow=needs_review, red=failed), the answer text, tool-used chips, and a collapsible tool
+      trace table with columns: tool name, attempt number, status badge, and truncated output
+      summary.
+    </p>
+
+    <h4>Workflow Page</h4>
+    <p>
+      Textarea (task), Submit. The page handles the two-phase LangGraph lifecycle: if the graph
+      finishes, <code>final_answer</code> and the audit log render immediately. If the graph
+      interrupts for human review, a yellow panel shows the draft answer, risk flags, confidence
+      score, and three buttons — Approve / Revise / Reject — that POST to
+      <code>/api/workflow/resume</code> with the same <code>thread_id</code>. The graph then
+      continues from its saved checkpoint without replaying any prior steps.
+    </p>
+
+    <h4>Memory Page</h4>
+    <p>
+      Query input, user-id input, Submit. Three sections: short-term context (raw
+      <code>&lt;pre&gt;</code> block), long-term memory results (kind badge, score, text), and
+      entity memory (tag cloud of extracted entity names).
+    </p>
+
+    <h4>MCP Tools Page</h4>
+    <p>
+      Three tab buttons: Normalize Claim, Venue Lookup, Reading Plan. Each tab has its own
+      placeholder text and calls <code>/api/mcp/{tool}</code>. The raw JSON payload renders in a
+      <code>JsonPanel</code> with monospace font and scroll.
+    </p>
+
+    <h4>Evaluate Page</h4>
+    <p>
+      Single "Run Evaluation" button. On completion: a row of five score cards (Overall,
+      Faithfulness, Relevance, Recall, Citations) with color-coded percentages (green ≥ 70%,
+      yellow ≥ 40%, red below), then a results table with per-question scores and citation names.
+    </p>
+
+    <h3>Shared Components</h3>
+    <ul>
+      <li><code>Badge</code> — colored pill with five variants (green, yellow, red, blue, gray). <code>statusVariant(status)</code> maps agent/workflow status strings to variants.</li>
+      <li><code>Spinner</code> — animated ring with "Running…" label, shown during any in-flight request.</li>
+      <li><code>ErrorBanner</code> — red dismissible banner for API errors.</li>
+      <li><code>JsonPanel</code> — scrollable monospace <code>&lt;pre&gt;</code> block for raw JSON payloads.</li>
+      <li><code>CitationList</code> — numbered list of <code>Citation</code> objects with source name, score pill, snippet, and flag badges.</li>
+      <li><code>AuditLog</code> — numbered monospace list of workflow audit log entries.</li>
+    </ul>
+
+    <h3>API Client Pattern</h3>
+    <p>
+      Each <code>src/api/*.ts</code> file exports one typed async function per endpoint. All
+      functions follow the same shape: <code>fetch</code> with JSON body, throw on non-2xx,
+      return parsed JSON cast to the matching type from <code>src/types.ts</code>.
+    </p>
+    <pre><code>// src/api/rag.ts
+export async function queryRag(req: RagRequest): Promise&lt;RagAnswer&gt; {
+  const res = await fetch('/api/rag', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
+</code></pre>
+    <p>
+      Pages import from <code>src/api/</code> and hold response state locally with
+      <code>useState</code>. There is no global state store — each page is self-contained.
+      Loading state (<code>loading</code>), error state (<code>error</code>), and result state
+      are all local to the page component.
+    </p>
+
+    <h3>How to Run</h3>
+    <pre><code># Terminal 1 — backend API (from agentic-ai-system-rag-mcp)
+uv run genai-lab-api
+# → FastAPI on http://localhost:8000
+# → Docs at http://localhost:8000/docs
+
+# Terminal 2 — frontend dev server (from agentic-ai-system-rag-mcp-fe)
+npm run dev
+# → Vite on http://localhost:5173
+# → /api/* proxied to :8000
+</code></pre>
+
+    <h3>Code References</h3>
+    <ul>
+      <li><code>src/App.tsx</code>: fixed sidebar with nav links; <code>currentPage</code> state drives which page renders.</li>
+      <li><code>src/types.ts</code>: TypeScript interfaces for all API response shapes.</li>
+      <li><code>src/api/</code>: typed fetch wrappers — one file per backend domain.</li>
+      <li><code>src/components/</code>: six shared UI primitives.</li>
+      <li><code>src/pages/</code>: six page components, one per genai-lab module.</li>
+      <li><code>vite.config.ts</code>: Tailwind v4 plugin registration and <code>/api</code> proxy to port 8000.</li>
+      <li><code>src/genai_lab/api/</code> (backend): FastAPI app, schemas, and route handlers consumed by the frontend.</li>
+    </ul>
+
+    <h3>Best Practices Applied</h3>
+    <ul>
+      <li>Proxy <code>/api/*</code> in Vite instead of adding CORS exceptions per-page — one config line handles all routes.</li>
+      <li>Type API responses in <code>src/types.ts</code> matching the backend dataclass/Pydantic shapes so TypeScript catches drift at build time.</li>
+      <li>Keep page state local — no global store needed for six isolated pages.</li>
+      <li>Show a <code>Spinner</code> immediately on submit and clear it in a <code>finally</code> block so the UI is never stuck.</li>
+      <li>Surface errors in an <code>ErrorBanner</code> rather than a console log so users can see what failed.</li>
+      <li>The Workflow page's human-review panel sends the stored <code>thread_id</code> back on resume — the backend graph picks up from its checkpoint without rerunning expensive steps.</li>
+    </ul>
+
+    <h3>Gotchas and Failure Modes</h3>
+    <ul>
+      <li><strong>Type drift:</strong> if a backend dataclass field is renamed or added, <code>src/types.ts</code> must be updated or TypeScript will accept stale shapes at compile time (the JSON is cast, not validated at runtime).</li>
+      <li><strong>Workflow graph singleton:</strong> the compiled LangGraph graph is module-level in the route handler. A backend restart loses all in-memory checkpoints. Resume will fail for threads that existed before the restart.</li>
+      <li><strong>Tailwind v4 differences:</strong> v4 uses <code>@import "tailwindcss"</code> instead of three separate directives; the config file is optional. Upgrading from v3 requires removing <code>tailwind.config.js</code> and the PostCSS plugin.</li>
+      <li><strong>Vite proxy in prod:</strong> the proxy only runs in the Vite dev server. A production build needs an actual reverse proxy (Nginx, cloud load balancer) routing <code>/api/*</code> to the FastAPI service.</li>
+    </ul>
+
+    <div class="quiz">
+      <h3>Quiz</h3>
+
+      <h4>1. Why does the Vite config proxy <code>/api/*</code> to the backend instead of calling the backend URL directly from <code>fetch</code>?</h4>
+      <p class="answer">The proxy avoids CORS entirely in development. The browser sees requests going to its own origin (localhost:5173), so no preflight or CORS header is needed. In production, a reverse proxy replaces this role.</p>
+
+      <h4>2. Why is there no global state manager (Redux, Zustand, etc.) in this frontend?</h4>
+      <p class="answer">Each of the six pages is fully independent. There is no shared state between them — no user session, no cross-page data flow. Local useState is sufficient and avoids the complexity cost of a global store.</p>
+
+      <h4>3. How does the Workflow page resume a human-review interrupt without replaying expensive steps?</h4>
+      <p class="answer">It sends the thread_id from the interrupted response to POST /api/workflow/resume. The backend calls graph.invoke(Command(resume=decision)) with the same thread_id config, which loads the saved checkpoint from InMemorySaver and continues from the interrupt point — not from the start.</p>
+
+      <h4>4. What is the risk of casting fetch responses to TypeScript types without runtime validation?</h4>
+      <p class="answer">TypeScript types are erased at runtime. If the backend returns a shape that differs from the declared interface (a renamed field, a missing key), the app will silently accept the wrong shape and fail later when accessing the missing field. A runtime validator like Zod would catch this at the boundary.</p>
+
+      <h4>5. What changes when moving from the Vite dev proxy to a production deployment?</h4>
+      <p class="answer">The Vite proxy only runs during development. In production, vite build produces static assets that are served by a web server (Nginx, CDN, etc.). That server must be configured to proxy /api/* to the FastAPI container, replacing the dev proxy with a real reverse-proxy rule.</p>
 
       <button class="reveal" type="button" data-toggle-answers>Reveal Answers</button>
     </div>

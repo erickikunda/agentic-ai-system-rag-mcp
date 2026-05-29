@@ -5,6 +5,8 @@ description = "Production-realistic GenAI engineering lab for RAG, agents, memor
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.32",
   "langchain>=1.1",
   "langchain-core>=0.3",
   "llama-index-core>=0.12",
@@ -20,6 +22,7 @@ dependencies = [
 ]
 
 [project.scripts]
+genai-lab-api = "genai_lab.api.app:main"
 genai-lab-ingest = "genai_lab.ingestion.cli:main"
 genai-lab-rag = "genai_lab.rag.cli:main"
 genai-lab-agent = "genai_lab.agents.cli:main"
