@@ -6,7 +6,7 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from genai_lab.api.routes import agent, evaluate, health, memory, mcp, rag, workflow
+from genai_lab.api.routes import agent, evaluate, health, ingest, memory, mcp, rag, workflow
 
 app = FastAPI(title="genai-lab API", version="0.1.0")
 
@@ -18,6 +18,7 @@ app.add_middleware(
 )
 
 app.include_router(health.router, prefix="/api")
+app.include_router(ingest.router, prefix="/api")
 app.include_router(rag.router, prefix="/api")
 app.include_router(agent.router, prefix="/api")
 app.include_router(workflow.router, prefix="/api")
