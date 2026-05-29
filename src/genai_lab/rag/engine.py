@@ -5,12 +5,18 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from llama_index.core.query_engine import CitationQueryEngine, RetrieverQueryEngine
+from llama_index.core.schema import NodeWithScore
 
 from genai_lab.config.settings import Settings
 from genai_lab.ingestion.chunking import ChunkingProfile
 from genai_lab.rag.query_transform import build_query_variants
-from genai_lab.rag.retrieval import LocalCorpusRetriever, create_vector_retriever, tokenize
+from genai_lab.rag.retrieval import (
+    LocalCorpusRetriever,
+    apply_context_budget,
+    create_vector_retriever,
+    node_to_context,
+    tokenize,
+)
 from genai_lab.rag.schema import Citation, RagAnswer, RagConfig, RetrievedContext
 from genai_lab.rag.security import context_boundary_prompt
 
@@ -145,36 +151,40 @@ class RagQueryEngine:
     def _query_vector_store(self, *, question: str, queries: tuple[str, ...]) -> RagAnswer:
         """Run the LlamaIndex vector query path.
 
-        This path requires a populated PGVector index and a reachable embedding
-        backend. It is not used by unit tests because it depends on local
-        infrastructure.
+        Calls the retriever directly — no LLM synthesis step — then pipes nodes
+        through the same deterministic synthesis used by the local path. This
+        avoids any dependency on OpenAI or other hosted LLMs.
         """
 
         retriever = create_vector_retriever(self.settings, self.config)
-        query_engine = RetrieverQueryEngine.from_args(retriever=retriever)
-        # Constructing CitationQueryEngine here documents the intended LlamaIndex
-        # citation path; RetrieverQueryEngine is used for query variants/fusion.
-        _citation_engine_type = CitationQueryEngine
-        response = query_engine.query(
-            f"{context_boundary_prompt()}\n\nQuestion: {question}\nRetrieval queries: {queries}"
-        )
-        source_nodes = getattr(response, "source_nodes", [])
-        contexts = [
-            RetrievedContext(
-                text=node.node.get_content(),
-                metadata={str(key): str(value) for key, value in node.node.metadata.items()},
-                score=float(node.score or 0.0),
-                flags=(),
+
+        # Fuse results across all query variants.
+        fused: dict[str, tuple[object, float]] = {}
+        for query in queries:
+            nodes: list[NodeWithScore] = retriever.retrieve(
+                f"{context_boundary_prompt()}\n\n{query}"
             )
-            for node in source_nodes[: self.config.rerank_top_n]
+            for rank, node in enumerate(nodes, start=1):
+                score = float(node.score or 0.0) + 1 / (rank + 60)
+                if node.node_id not in fused or score > fused[node.node_id][1]:
+                    fused[node.node_id] = (node, score)
+
+        sorted_nodes = sorted(fused.values(), key=lambda item: item[1], reverse=True)
+        contexts = [
+            node_to_context(nws.node, score=score)  # type: ignore[union-attr]
+            for nws, score in sorted_nodes[: self.config.rerank_top_n]
         ]
+        contexts = apply_context_budget(contexts, self.config.context_token_budget)
+        warnings = tuple(sorted({flag for ctx in contexts for flag in ctx.flags}))
+        answer = synthesize_deterministic_answer(question=question, contexts=contexts)
         return RagAnswer(
             question=question,
             transformed_queries=queries,
-            answer=str(response),
+            answer=answer,
             citations=build_citations(contexts),
             strategy=self.config.strategy,
             transform=self.config.transform,
+            warnings=warnings,
         )
 
     def with_config(self, **changes: object) -> "RagQueryEngine":
