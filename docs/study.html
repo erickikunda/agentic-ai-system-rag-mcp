@@ -193,12 +193,13 @@
       <li><a href="#module-5">Module 5 - Memory</a></li>
       <li><a href="#module-6">Module 6 - MCP</a></li>
       <li><a href="#module-7">Module 7 - Observability</a></li>
+      <li><a href="#module-8">Module 8 - Cloud Deployment</a></li>
     </ul>
   </nav>
 
   <section id="module-0">
     <h2>Module 0 - Design & Architecture</h2>
-    <p class="meta">Status: design complete, awaiting approval before Module 1 implementation.</p>
+    <p class="meta">Status: complete. Architecture extended with three-tier cloud deployment design — see <a href="#module-8">Module 8</a>.</p>
 
     <div class="callout">
       <strong>Domain choice:</strong> Research Assistant for technical papers and engineering notes.
@@ -420,20 +421,24 @@
       <code>docker-compose.yml</code> defines four service roles: Python app, Postgres with PGVector,
       Ollama, and Spring Boot MCP server. Postgres and Ollama are the default local infrastructure.
       The app and MCP server are profile-gated until their Dockerfiles are introduced in later modules.
-      This keeps Module 0 honest: the topology is documented without pretending the whole system is
-      runnable before the code exists.
+    </p>
+    <p>
+      For cloud deployment the single <code>app</code> profile splits into three independently scaled
+      tiers: a stateless query API, a batch ingestion job, and stateless MCP replicas. The query tier
+      and ingestion job can share the same Python image with different entrypoints. See
+      <a href="#module-8">Module 8</a> for the full production topology.
     </p>
 
     <pre><code>Local dev:
   docker compose up postgres ollama
 
-Later app profile:
-  docker compose --profile app --profile mcp up --build
+Local with MCP server:
+  docker compose --profile mcp up --build
 
-Prod-like profile:
+Prod profile (three tiers, managed cloud services):
   GENAI_LAB_LLM_PROVIDER=openai|gemini|anthropic
   GENAI_LAB_VECTOR_STORE_PROVIDER=pinecone
-  app container skips Ollama and uses managed vector storage
+  Query service + Ingestion job + MCP replicas run independently
 </code></pre>
 
     <h3>LLM and Vector Store Abstraction Strategy</h3>
@@ -1263,6 +1268,14 @@ ollama pull nomic-embed-text
       preserve thread state, while the store preserves memories across threads.
     </p>
 
+    <div class="warning callout">
+      <strong>Scaling blocker:</strong> <code>LongTermMemoryStore</code> defaults to LangGraph
+      <code>InMemoryStore()</code> — state is lost on restart and not shared across replicas. Running
+      more than one query-service replica requires replacing this with a Postgres+pgvector-backed store
+      first. This is the gating Phase 1 task in the cloud deployment plan — see
+      <a href="#module-8">Module 8</a>.
+    </div>
+
     <pre><code>Conversation turn
   -> short-term buffer
   -> summarize if budget is exceeded
@@ -1720,6 +1733,228 @@ docker compose --profile app --profile mcp config
 
       <h4>5. What should agentic loop logs avoid?</h4>
       <p class="answer">Full secrets, unbounded prompts, raw retrieved documents, and unlimited memory/tool payloads. Logs should be bounded, redacted, and useful for debugging decisions.</p>
+
+      <button class="reveal" type="button" data-toggle-answers>Reveal Answers</button>
+    </div>
+  </section>
+
+  <section id="module-8">
+    <h2>Module 8 - Cloud Deployment at Scale</h2>
+    <p class="meta">Status: architecture defined. Full phase checklist in <code>docs/deployment-implementation-plan.md</code>.</p>
+
+    <div class="callout">
+      <strong>What this adds:</strong> the lab is deployable beyond a single laptop. The local
+      Docker Compose topology is refactored into three independently scaled tiers — a stateless
+      query API, a batch ingestion job, and stateless MCP replicas — backed by managed cloud
+      services for LLM calls, vector search, and memory persistence.
+    </div>
+
+    <h3>Why Three Tiers, Not One App</h3>
+    <p>
+      The single <code>app</code> container in <code>docker-compose.yml</code> is a local
+      convenience, not a production shape. Query traffic and ingestion workloads have fundamentally
+      different scaling profiles: queries need fast interactive latency and autoscale on RPS;
+      ingestion needs high throughput over large documents, runs as a scheduled or event-triggered
+      job, and does not need to be always-on. Running them in the same process means scaling one
+      forces scaling both, which is expensive and operationally coupled.
+    </p>
+    <p>
+      The Spring Boot MCP server (<code>ResearchToolService</code>) exposes pure functions with no
+      database or shared state. It is trivially horizontally scalable and belongs behind its own
+      load balancer, independent of the query and ingestion tiers.
+    </p>
+
+    <h3>Cloud Architecture</h3>
+    <pre><code>                ┌──────────────────────────────────────────────────────────┐
+ Users → API GW/LB → Query service  (stateless, autoscaled on RPS/latency)
+                │        = FastAPI wrapping RAG engine / LangGraph workflow / agent
+                │              │               │                      │
+                │       Managed LLM      Vector store           Memory store
+                │       + embeddings     (pgvector/Pinecone)    (Postgres+pgvector)
+                │              │
+                │       MCP server (stateless Spring, N replicas behind LB)
+                └──────────────────────────────────────────────────────────┘
+
+ Doc upload → Object store → (event / schedule) → Ingestion JOB → vector store
+</code></pre>
+    <p>
+      The query tier and ingestion job can share the same Python Docker image with different
+      entrypoints: the query service runs <code>uvicorn</code> (Phase 2 FastAPI app), and the
+      ingestion job runs <code>python -m genai_lab.ingestion.cli</code>. Same image, different
+      lifecycle.
+    </p>
+
+    <h3>Phase Plan</h3>
+
+    <h4>Phase 0 — Foundations (infra + CI/CD)</h4>
+    <p>
+      Choose cloud (AWS or GCP) and define <code>dev</code>, <code>staging</code>, and
+      <code>prod</code> environments mapping to <code>RuntimeProfile</code>. Provision IaC
+      (Terraform or CDK): VPC, managed Postgres+pgvector, object store, secret manager, image
+      registry, and load balancer. Build pipeline publishes the Python image (query + ingestion
+      entrypoints) and the Java MCP image. Move secrets from <code>.env</code> into the secret
+      manager; existing <code>SecretStr</code> fields (<code>postgres_dsn</code>,
+      <code>*_api_key</code>) load them transparently via the
+      <code>GENAI_LAB_</code>-prefixed environment variables.
+    </p>
+
+    <h4>Phase 1 — Externalize Long-Term Memory (gating)</h4>
+    <p>
+      This is the critical scaling blocker. <code>LongTermMemoryStore</code> in
+      <code>memory/store.py</code> defaults to LangGraph <code>InMemoryStore()</code>. That store
+      is lost on restart and not shared across replicas. With more than one query replica, a user
+      hitting different pods will see different or missing memory.
+    </p>
+    <p>
+      The fix: implement a Postgres+pgvector-backed store behind the existing
+      <code>LongTermMemoryStore</code> interface. Replace the lexical <code>_lexical_score</code>
+      ranking with embedding-based semantic search, reusing the embedding adapter from Phase 4.
+      Preserve <code>MemoryNamespace</code> scoping (<code>memory/user/&lt;id&gt;</code>,
+      <code>memory/agent/&lt;id&gt;</code>) so per-user isolation holds across instances. Do not
+      run more than one query replica until this phase is complete.
+    </p>
+
+    <h4>Phase 2 — HTTP API for the Query Tier</h4>
+    <p>
+      Add a FastAPI/uvicorn application exposing the RAG engine, agent, and LangGraph workflow as
+      HTTP endpoints. This becomes the query-tier container entrypoint — currently everything is
+      CLI-only. Keep request handling stateless; all durable state lives in the memory store and
+      vector store. Add <code>/healthz</code> and <code>/readyz</code> probes for load-balancer
+      health checks. Pass <code>user_id</code> per request so <code>MemoryNamespace</code>
+      scoping and per-user memory retrieval work correctly.
+    </p>
+
+    <h4>Phase 3 — Split Ingestion into a Job</h4>
+    <p>
+      Make ingestion a separate container entrypoint or cloud job, not part of the always-on
+      query service. Read source documents from object storage instead of the local
+      <code>ingestion_input_dir</code>. Trigger on upload event or schedule; write
+      chunks and embeddings to the managed vector store. Reuse the LlamaIndex ingestion cache
+      where possible; make re-runs idempotent so a crashed or retried job does not duplicate
+      chunks.
+    </p>
+
+    <h4>Phase 4 — Managed LLM and Vector Store</h4>
+    <p>
+      Implement <code>ChatModelFactory</code> and <code>EmbeddingModelFactory</code> adapters for
+      the cloud LLM provider: Bedrock (Claude) on AWS, Vertex AI on GCP. Select via
+      <code>GENAI_LAB_LLM_PROVIDER</code>. Retire Ollama for the <code>prod</code> profile.
+      Point retrieval at managed Postgres+pgvector or Pinecone via
+      <code>GENAI_LAB_VECTOR_STORE_PROVIDER</code>. Tune <code>rag_top_k</code>,
+      <code>rag_rerank_top_n</code>, and <code>rag_context_token_budget</code> against the
+      managed model and load-test end-to-end latency.
+    </p>
+
+    <h4>Phase 5 — Scale the MCP Server</h4>
+    <p>
+      <code>ResearchToolService</code> tools are pure functions with no shared state.
+      Run N stateless replicas behind a load balancer. Add Spring Boot Actuator health probes and
+      point the query service's <code>GENAI_LAB_MCP_SERVER_URL</code> at the load-balancer
+      address. No persistence layer is needed.
+    </p>
+
+    <h4>Phase 6 — Observability, Scaling, and Ops</h4>
+    <p>
+      Ship <code>JsonlTraceWriter</code> traces to CloudWatch Logs or Cloud Logging (or enable
+      LangSmith via <code>GENAI_LAB_LANGSMITH_TRACING=true</code>). Autoscale the query API on
+      RPS and latency; MCP server on CPU; ingestion as on-demand or scheduled cloud jobs. Add
+      alarms for query 5xx rate, p95 latency, model latency and cost, DB connection pool
+      saturation, and ingestion job failures. Capacity-plan the managed LLM endpoint
+      (provisioned throughput) for expected concurrent user load.
+    </p>
+
+    <h3>Cloud Service Mapping</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Concern</th>
+          <th>AWS</th>
+          <th>GCP</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Query API (online)</td>
+          <td>ECS Fargate / EKS + ALB</td>
+          <td>Cloud Run / GKE</td>
+        </tr>
+        <tr>
+          <td>Ingestion (batch job)</td>
+          <td>ECS scheduled task / AWS Batch / Lambda</td>
+          <td>Cloud Run Jobs / Batch</td>
+        </tr>
+        <tr>
+          <td>Doc landing + trigger</td>
+          <td>S3 → EventBridge / SQS</td>
+          <td>GCS → Eventarc / Pub/Sub</td>
+        </tr>
+        <tr>
+          <td>MCP server (stateless)</td>
+          <td>Fargate / EKS</td>
+          <td>Cloud Run / GKE</td>
+        </tr>
+        <tr>
+          <td>Vector store + memory</td>
+          <td>RDS/Aurora pgvector (or Pinecone)</td>
+          <td>Cloud SQL pgvector (or Vertex / Pinecone)</td>
+        </tr>
+        <tr>
+          <td>LLM + embeddings</td>
+          <td>Bedrock (Claude)</td>
+          <td>Vertex AI</td>
+        </tr>
+        <tr>
+          <td>Secrets</td>
+          <td>Secrets Manager</td>
+          <td>Secret Manager</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>Suggested Execution Order</h3>
+    <p>
+      Phase 0 → <strong>Phase 1 (memory externalization — gating)</strong> → Phase 2 (HTTP API)
+      → Phase 4 (managed LLM/vectors) → Phase 3 (ingestion job) → Phase 5 (MCP replicas) →
+      Phase 6 (ops). Phase 1 gates multi-replica deployments. All other phases can overlap once
+      it lands.
+    </p>
+
+    <h3>Explicit Non-Goals and Pitfalls</h3>
+    <ul>
+      <li>Do <strong>not</strong> run more than one query replica until Phase 1 is complete — per-user memory will be inconsistent across pods.</li>
+      <li>Do <strong>not</strong> bundle ingestion into the always-on query service — it is a batch job with a different scaling shape.</li>
+      <li>Keep the deterministic dry-run paths and the evaluation suite green as model-backed adapters replace Ollama and local retrieval stubs.</li>
+      <li>Provider-neutral ports (<code>VectorStoreFactory</code>, model adapter factories) must stay clean — switching from Ollama to Bedrock should be a settings change, not a code rewrite.</li>
+    </ul>
+
+    <h3>Code References</h3>
+    <ul>
+      <li><code>docs/deployment-implementation-plan.md</code>: full phase checklist and cloud service mapping.</li>
+      <li><code>src/genai_lab/config/settings.py</code>: <code>RuntimeProfile</code>, <code>LlmProvider</code>, <code>VectorStoreProvider</code> — the configuration switchboards for cloud profiles.</li>
+      <li><code>src/genai_lab/memory/store.py</code>: <code>LongTermMemoryStore</code> boundary that Phase 1 replaces with a PGVector backend.</li>
+      <li><code>src/genai_lab/memory/pgvector_design.py</code>: production memory table schema.</li>
+      <li><code>src/genai_lab/ports/</code>: provider-neutral interfaces that prevent cloud-provider coupling from leaking into business logic.</li>
+      <li><code>docker-compose.yml</code>: local four-service topology; production splits the <code>app</code> profile into query service and ingestion job.</li>
+      <li><code>mcp-server/Dockerfile</code>: multi-stage Java build already suited for container deployment.</li>
+    </ul>
+
+    <div class="quiz">
+      <h3>Quiz</h3>
+
+      <h4>1. Why must long-term memory be externalized before running more than one query replica?</h4>
+      <p class="answer">Because <code>InMemoryStore</code> is not shared across processes. A user hitting different replicas would see different or missing memory, making per-user behavior inconsistent.</p>
+
+      <h4>2. Why is ingestion a separate job instead of part of the always-on query service?</h4>
+      <p class="answer">Ingestion is a batch workload triggered by document uploads or schedules. Bundling it into the query service couples two completely different scaling shapes — interactive RPS versus document throughput — forcing both to scale together unnecessarily.</p>
+
+      <h4>3. What is the right autoscaling signal for the query tier versus the MCP server?</h4>
+      <p class="answer">The query tier scales on RPS and latency because it serves interactive user requests under variable load. The MCP server exposes pure functions and scales on CPU utilization.</p>
+
+      <h4>4. Why keep the deterministic dry-run evaluation suite green as model-backed adapters replace local stubs?</h4>
+      <p class="answer">The suite is a regression gate. If a retrieval or synthesis change degrades answer quality, the deterministic metrics catch it cheaply in CI before the change reaches production traffic.</p>
+
+      <h4>5. What keeps cloud deployment a configuration change rather than a code rewrite?</h4>
+      <p class="answer">Provider-neutral ports and the Settings abstraction. LlmProvider, VectorStoreProvider, and adapter factories isolate cloud-specific construction so business logic does not need to change when switching between Ollama/PGVector and Bedrock/Pinecone.</p>
 
       <button class="reveal" type="button" data-toggle-answers>Reveal Answers</button>
     </div>
