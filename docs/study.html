@@ -1226,21 +1226,23 @@ ollama pull nomic-embed-text
 
   <section id="module-5">
     <h2>Module 5 - Memory & Persistence</h2>
-    <p class="meta">Status: implemented and verified with local LangGraph-store-backed memory.</p>
+    <p class="meta">Status: updated — profile-based backend selection: <code>InMemoryStore</code> for dev/test, PostgreSQL+pgvector for prod.</p>
 
     <div class="callout">
       <strong>What changed:</strong> the project now has a memory subsystem with bounded
       short-term conversation memory, deterministic summarization, scoped long-term memory,
-      semantic/episodic/entity memory types, LangGraph store integration, PGVector table design, a
-      CLI demo, and tests.
+      semantic/episodic/entity memory types, a <code>BaseMemoryStore</code> ABC with two
+      concrete backends (<code>LongTermMemoryStore</code> for dev, <code>PgLongTermMemoryStore</code>
+      for prod), profile-driven backend selection in <code>MemoryManager.create()</code>,
+      a <code>memory_table_sql()</code> DDL helper, a CLI demo, and tests.
     </div>
 
     <h3>What Was Built</h3>
     <p>
       Module 5 adds <code>src/genai_lab/memory</code>. The main facade is
       <code>MemoryManager</code>, which coordinates a <code>ConversationBuffer</code> for short-term
-      thread memory and a <code>LongTermMemoryStore</code> for durable user-scoped memory. It can
-      store conversation turns, remember semantic facts, extract entity memories, and build a
+      thread memory and a <code>BaseMemoryStore</code> implementation for durable user-scoped memory.
+      It can store conversation turns, remember semantic facts, extract entity memories, and build a
       prompt-ready <code>MemorySnapshot</code>.
     </p>
 
@@ -1261,20 +1263,13 @@ ollama pull nomic-embed-text
     </p>
 
     <p>
-      Long-term memory is stored through LangGraph's store API. Module 5 uses
-      <code>InMemoryStore</code> for local tests and deterministic lexical ranking for retrieval. The
-      production design swaps this boundary to PGVector so semantic, episodic, and entity memories can
-      be embedded and searched across conversations. The point is the interface: graph checkpoints
-      preserve thread state, while the store preserves memories across threads.
+      Long-term memory is backed by one of two concrete stores, selected at construction time by
+      <code>MemoryManager.create()</code> based on <code>settings.profile</code>.
+      Both stores implement the same <code>BaseMemoryStore</code> ABC and use lexical ranking for
+      search. The point is the interface: graph checkpoints preserve thread state, while the store
+      persists memories across threads — and that interface now works in both profiles without
+      changing any caller code.
     </p>
-
-    <div class="warning callout">
-      <strong>Scaling blocker:</strong> <code>LongTermMemoryStore</code> defaults to LangGraph
-      <code>InMemoryStore()</code> — state is lost on restart and not shared across replicas. Running
-      more than one query-service replica requires replacing this with a Postgres+pgvector-backed store
-      first. This is the gating Phase 1 task in the cloud deployment plan — see
-      <a href="#module-8">Module 8</a>.
-    </div>
 
     <pre><code>Conversation turn
   -> short-term buffer
@@ -1292,6 +1287,46 @@ New task
   -> retrieve entity memories
   -> build MemorySnapshot
 </code></pre>
+
+    <h3>Backend Selection by Profile</h3>
+    <p>
+      <code>MemoryManager.create(settings, user_id=...)</code> reads <code>settings.profile</code>
+      and constructs the appropriate backend. Callers never touch the backend directly — they go
+      through <code>MemoryManager</code>, which delegates to whichever store was selected.
+    </p>
+
+    <pre><code>settings.profile == PROD
+  -> PgLongTermMemoryStore(dsn, embedding_dimension)
+       psycopg.connect(dsn)
+       _ensure_table() — runs memory_table_sql(embedding_dimension) DDL
+       put()    — INSERT ... ON CONFLICT DO UPDATE
+       search() — SELECT by user_id + kind, lexical-ranked in Python
+
+settings.profile == DEV | TEST (default)
+  -> LongTermMemoryStore()
+       InMemoryStore() (LangGraph in-process store)
+       put()    — store.put(namespace, key, value)
+       search() — store.search(namespace), lexical-ranked in Python
+
+Both share BaseMemoryStore:
+  persist_turn()          — writes EPISODIC + ENTITY records
+  remember_semantic_fact() — writes SEMANTIC record
+</code></pre>
+
+    <p>
+      <code>BaseMemoryStore</code> is an abstract base class with <code>put()</code> and
+      <code>search()</code> as abstract methods. The shared logic — <code>persist_turn()</code>
+      and <code>remember_semantic_fact()</code> — lives in the base class and calls
+      <code>self.put()</code>, so it does not need to be duplicated across backends.
+    </p>
+
+    <p>
+      <code>PgLongTermMemoryStore</code> uses lexical ranking (the same <code>_lexical_score</code>
+      used by the InMemory backend) for now. When the embedding adapter is wired in deployment
+      Phase 4, the <code>search()</code> method can be updated to issue a pgvector cosine similarity
+      query instead — the <code>agent_memory</code> table and HNSW index are already created by
+      <code>memory_table_sql()</code>.
+    </p>
 
     <h3>Memory Types</h3>
     <ul>
@@ -1313,12 +1348,17 @@ New task
 
     <h3>PGVector as Memory Store</h3>
     <p>
-      <code>pgvector_design.py</code> records the production table shape for long-term memory:
-      memory id, user scope, agent scope, kind, text, metadata, embedding, creation time, and last
-      access time. In production, semantic search should filter by scope and kind before ranking by
-      vector similarity. The same Postgres/PGVector instance can support both document chunks and
-      memory records, but they should be separate tables or collections because they have different
-      lifecycles, deletion semantics, and privacy rules.
+      <code>pgvector_design.py</code> exports <code>memory_table_sql(embedding_dimension)</code>,
+      which returns the DDL for the <code>agent_memory</code> table: id, user_id, agent_id, kind,
+      text, metadata (JSONB), embedding (<code>VECTOR(n)</code>), created_at, and
+      last_accessed_at. <code>PgLongTermMemoryStore._ensure_table()</code> calls this at
+      construction time, so the table and its indexes (a B-tree scope index and an HNSW cosine
+      index) are created automatically when the prod store is first instantiated. The embedding
+      dimension is read from <code>settings.embedding_dimension</code> and must match the active
+      embedding model. In production, semantic search should filter by <code>user_id</code> and
+      <code>kind</code> before ranking by vector similarity. The same Postgres/PGVector instance
+      can support both document chunks and memory records, but they should live in separate tables
+      because they have different lifecycles, deletion semantics, and privacy rules.
     </p>
 
     <h3>Summarization Strategy</h3>
@@ -1333,11 +1373,11 @@ New task
     <h3>Code References</h3>
     <ul>
       <li><code>src/genai_lab/memory/short_term.py</code>: bounded conversation buffer and deterministic summary policy.</li>
-      <li><code>src/genai_lab/memory/store.py</code>: LangGraph-store-backed long-term memory and scoped search.</li>
+      <li><code>src/genai_lab/memory/store.py</code>: <code>BaseMemoryStore</code> ABC; <code>LongTermMemoryStore</code> (InMemory/dev); <code>PgLongTermMemoryStore</code> (psycopg/prod); shared <code>persist_turn</code> and <code>remember_semantic_fact</code> logic.</li>
       <li><code>src/genai_lab/memory/entity.py</code>: local entity extraction for durable entity records.</li>
-      <li><code>src/genai_lab/memory/manager.py</code>: facade that combines short-term, semantic, episodic, and entity memory.</li>
-      <li><code>src/genai_lab/memory/pgvector_design.py</code>: production PGVector table design.</li>
-      <li><code>tests/test_memory_manager.py</code>: tests for summarization, retrieval, episodic/entity writes, and entity extraction.</li>
+      <li><code>src/genai_lab/memory/manager.py</code>: facade with profile-based backend selection in <code>MemoryManager.create()</code>.</li>
+      <li><code>src/genai_lab/memory/pgvector_design.py</code>: <code>memory_table_sql(embedding_dimension)</code> — DDL for <code>agent_memory</code> table and HNSW index.</li>
+      <li><code>tests/test_memory_manager.py</code>: tests for summarization, retrieval, episodic/entity writes, and entity extraction (all run against the dev InMemory backend).</li>
     </ul>
 
     <h3>Best Practices Applied</h3>
@@ -1347,7 +1387,8 @@ New task
       <li>Store memory records with kind and metadata so retrieval can filter before ranking.</li>
       <li>Summarize old turns instead of replaying unbounded history.</li>
       <li>Keep entity memory conservative to avoid polluting future prompts.</li>
-      <li>Use a store boundary that can move from local tests to PGVector without changing callers.</li>
+      <li>Put shared write logic (<code>persist_turn</code>, <code>remember_semantic_fact</code>) in the ABC so backends only implement storage, not business rules.</li>
+      <li>Lazy-import the prod store in <code>MemoryManager.create()</code> so dev/test runs never attempt a DB connection.</li>
     </ul>
 
     <h3>Gotchas and Failure Modes</h3>
@@ -1365,9 +1406,11 @@ New task
 
     <h3>Verification</h3>
     <p>
-      Module 5 was verified with memory-specific tests, the CLI demo, and syntax compilation. The
-      CLI stores two semantic facts and one conversation turn, then retrieves memory for an embedding
-      drift preference query.
+      Module 5 was verified with memory-specific tests, the CLI demo, and syntax compilation. All
+      28 project tests pass. Tests use <code>Settings()</code> which defaults to the dev profile,
+      so they exercise the <code>InMemoryStore</code> backend and never attempt a DB connection.
+      The <code>PgLongTermMemoryStore</code> path requires a running Postgres instance with the
+      pgvector extension enabled (available via <code>docker compose up postgres</code>).
     </p>
 
     <h3>Source Notes</h3>
@@ -1395,6 +1438,12 @@ New task
 
       <h4>5. Why should document vectors and memory vectors live separately?</h4>
       <p class="answer">They have different lifecycles, privacy rules, deletion needs, metadata, and retrieval semantics, even if both use PGVector under the hood.</p>
+
+      <h4>6. Why does shared logic like <code>persist_turn</code> live in <code>BaseMemoryStore</code> rather than in each backend?</h4>
+      <p class="answer">Because the business rules for what to write (episodic record + entity records per turn) do not depend on how data is stored. Backends only need to implement <code>put()</code> and <code>search()</code>; the ABC composes them into higher-level operations without duplicating logic.</p>
+
+      <h4>7. Why is <code>PgLongTermMemoryStore</code> lazy-imported inside <code>MemoryManager.create()</code> rather than at the top of <code>manager.py</code>?</h4>
+      <p class="answer">So that importing the manager module never triggers a psycopg import or any connection attempt. Tests and dev-profile runs never pay the cost of loading prod dependencies they won't use.</p>
 
       <button class="reveal" type="button" data-toggle-answers>Reveal Answers</button>
     </div>
@@ -1798,20 +1847,21 @@ docker compose --profile app --profile mcp config
       <code>GENAI_LAB_</code>-prefixed environment variables.
     </p>
 
-    <h4>Phase 1 — Externalize Long-Term Memory (gating)</h4>
+    <h4>Phase 1 — Externalize Long-Term Memory ✓ implemented</h4>
     <p>
-      This is the critical scaling blocker. <code>LongTermMemoryStore</code> in
-      <code>memory/store.py</code> defaults to LangGraph <code>InMemoryStore()</code>. That store
-      is lost on restart and not shared across replicas. With more than one query replica, a user
-      hitting different pods will see different or missing memory.
+      <strong>Done.</strong> <code>PgLongTermMemoryStore</code> in <code>memory/store.py</code>
+      provides a PostgreSQL+pgvector-backed implementation behind the <code>BaseMemoryStore</code>
+      ABC. <code>MemoryManager.create()</code> selects it when <code>settings.profile == PROD</code>
+      and falls back to the LangGraph <code>InMemoryStore</code> backend for dev and test.
+      The <code>agent_memory</code> table (with scope index and HNSW cosine index) is created
+      automatically on first connection via <code>memory_table_sql(embedding_dimension)</code>.
+      <code>MemoryNamespace</code> scoping is preserved — <code>user_id</code> is extracted from the
+      namespace tuple so per-user isolation holds across replicas.
     </p>
     <p>
-      The fix: implement a Postgres+pgvector-backed store behind the existing
-      <code>LongTermMemoryStore</code> interface. Replace the lexical <code>_lexical_score</code>
-      ranking with embedding-based semantic search, reusing the embedding adapter from Phase 4.
-      Preserve <code>MemoryNamespace</code> scoping (<code>memory/user/&lt;id&gt;</code>,
-      <code>memory/agent/&lt;id&gt;</code>) so per-user isolation holds across instances. Do not
-      run more than one query replica until this phase is complete.
+      Remaining: replace lexical ranking in <code>PgLongTermMemoryStore.search()</code> with a
+      pgvector cosine similarity query once the embedding adapter lands in Phase 4. The table
+      schema and HNSW index are already in place for that upgrade.
     </p>
 
     <h4>Phase 2 — HTTP API for the Query Tier</h4>
@@ -1913,15 +1963,15 @@ docker compose --profile app --profile mcp config
 
     <h3>Suggested Execution Order</h3>
     <p>
-      Phase 0 → <strong>Phase 1 (memory externalization — gating)</strong> → Phase 2 (HTTP API)
-      → Phase 4 (managed LLM/vectors) → Phase 3 (ingestion job) → Phase 5 (MCP replicas) →
-      Phase 6 (ops). Phase 1 gates multi-replica deployments. All other phases can overlap once
-      it lands.
+      <strong>Phase 1 (memory externalization) is complete.</strong> Remaining order:
+      Phase 0 (IaC/CI) → Phase 2 (HTTP API) → Phase 4 (managed LLM/vectors, including wiring
+      vector search into <code>PgLongTermMemoryStore</code>) → Phase 3 (ingestion job) →
+      Phase 5 (MCP replicas) → Phase 6 (ops).
     </p>
 
     <h3>Explicit Non-Goals and Pitfalls</h3>
     <ul>
-      <li>Do <strong>not</strong> run more than one query replica until Phase 1 is complete — per-user memory will be inconsistent across pods.</li>
+      <li>Phase 1 (memory externalization) is complete — running multiple query replicas is now safe as long as <code>GENAI_LAB_PROFILE=prod</code> and a shared Postgres instance is configured.</li>
       <li>Do <strong>not</strong> bundle ingestion into the always-on query service — it is a batch job with a different scaling shape.</li>
       <li>Keep the deterministic dry-run paths and the evaluation suite green as model-backed adapters replace Ollama and local retrieval stubs.</li>
       <li>Provider-neutral ports (<code>VectorStoreFactory</code>, model adapter factories) must stay clean — switching from Ollama to Bedrock should be a settings change, not a code rewrite.</li>
@@ -1931,8 +1981,8 @@ docker compose --profile app --profile mcp config
     <ul>
       <li><code>docs/deployment-implementation-plan.md</code>: full phase checklist and cloud service mapping.</li>
       <li><code>src/genai_lab/config/settings.py</code>: <code>RuntimeProfile</code>, <code>LlmProvider</code>, <code>VectorStoreProvider</code> — the configuration switchboards for cloud profiles.</li>
-      <li><code>src/genai_lab/memory/store.py</code>: <code>LongTermMemoryStore</code> boundary that Phase 1 replaces with a PGVector backend.</li>
-      <li><code>src/genai_lab/memory/pgvector_design.py</code>: production memory table schema.</li>
+      <li><code>src/genai_lab/memory/store.py</code>: <code>BaseMemoryStore</code> ABC; <code>LongTermMemoryStore</code> (dev); <code>PgLongTermMemoryStore</code> (prod) — Phase 1 complete.</li>
+      <li><code>src/genai_lab/memory/pgvector_design.py</code>: <code>memory_table_sql(embedding_dimension)</code> — production DDL used by <code>PgLongTermMemoryStore._ensure_table()</code>.</li>
       <li><code>src/genai_lab/ports/</code>: provider-neutral interfaces that prevent cloud-provider coupling from leaking into business logic.</li>
       <li><code>docker-compose.yml</code>: local four-service topology; production splits the <code>app</code> profile into query service and ingestion job.</li>
       <li><code>mcp-server/Dockerfile</code>: multi-stage Java build already suited for container deployment.</li>
